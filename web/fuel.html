@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>i20 Fuel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Saira:wdth,wght@75..125,300..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="fuel.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="index.html">i20 Logbook</a>
+    <nav aria-label="Pages">
+      <a href="index.html">Overview</a>
+      <a href="map.html">Map</a>
+      <a href="performance.html">Performance</a>
+      <a href="fuel.html" aria-current="page">Fuel</a>
+    </nav>
+    <div class="sync">
+      <span id="sync-label" class="sync-label">Loading…</span>
+      <button id="sync-btn" type="button">Sync now</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <h1 id="h-main"></h1>
+      <p id="h-lede"></p>
+      <div class="stats" id="h-stats"></div>
+    </section>
+
+    <section id="calibration" class="sec">
+      <h2 id="h-cal"></h2>
+      <p class="lede" id="l-cal"></p>
+      <div class="split wide-left">
+        <div id="c-cal" class="chart tall"></div>
+        <div class="stats one-col" id="s-cal"></div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-cal"></div></details>
+    </section>
+
+    <section id="fills" class="sec">
+      <h2 id="h-fills"></h2>
+      <p class="lede" id="l-fills"></p>
+      <h3>Litres per fill-up</h3>
+      <div id="c-litres" class="chart tall"></div>
+      <div class="split">
+        <div>
+          <h3>Price paid per litre</h3>
+          <div id="c-rate" class="chart"></div>
+          <p class="note" id="n-rate"></p>
+        </div>
+        <div>
+          <h3>By brand</h3>
+          <div class="tbl-wrap"><table class="tbl" id="t-brands"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="economy" class="sec">
+      <h2 id="h-econ"></h2>
+      <p class="lede" id="l-econ"></p>
+      <h3>Kilometres per litre between brim fills</h3>
+      <div id="c-intervals" class="chart tall"></div>
+      <div class="split">
+        <div>
+          <h3>Economy against highway share</h3>
+          <div id="c-hwy" class="chart"></div>
+          <p class="note" id="n-hwy"></p>
+        </div>
+        <div>
+          <h3>Gaps in the log</h3>
+          <div class="tbl-wrap"><table class="tbl" id="t-missing"></table></div>
+          <p class="note" id="n-missing"></p>
+        </div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-econ"></div></details>
+    </section>
+
+    <section id="model" class="sec">
+      <h2 id="h-model"></h2>
+      <p class="lede" id="l-model"></p>
+      <h3>Prior and posterior for each coefficient</h3>
+      <div class="grid-3">
+        <div><div id="c-post-0" class="chart short"></div></div>
+        <div><div id="c-post-1" class="chart short"></div></div>
+        <div><div id="c-post-2" class="chart short"></div></div>
+      </div>
+      <div class="tbl-wrap"><table class="tbl" id="t-coef"></table></div>
+      <div class="split">
+        <div>
+          <h3>Actual vs predicted litres per interval</h3>
+          <div id="c-fit" class="chart"></div>
+        </div>
+        <div>
+          <h3>Marginal likelihood across noise scales</h3>
+          <div id="c-evidence" class="chart"></div>
+        </div>
+      </div>
+      <div class="stats" id="s-model"></div>
+      <details class="method"><summary>Method</summary><div id="m-model"></div></details>
+    </section>
+
+    <section id="costs" class="sec">
+      <h2 id="h-costs"></h2>
+      <p class="lede" id="l-costs"></p>
+      <div class="stats" id="s-costs"></div>
+      <h3>Monthly fuel spend: what you paid vs what the model says you burned</h3>
+      <div id="c-monthly" class="chart tall"></div>
+      <div class="split">
+        <div>
+          <h3>City vs highway: share of distance and of fuel</h3>
+          <div id="c-share" class="chart short"></div>
+          <p class="note" id="n-share"></p>
+        </div>
+        <div>
+          <h3>Estimated fuel cost per trip</h3>
+          <div id="c-tripcost" class="chart"></div>
+          <p class="note" id="n-tripcost"></p>
+        </div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-costs"></div></details>
+    </section>
+
+    <section id="level" class="sec">
+      <h2 id="h-level"></h2>
+      <p class="lede" id="l-level"></p>
+    </section>
+  </main>
+
+  <footer class="foot" id="foot"></footer>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="common.js"></script>
+  <script src="fuel.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets and personal car data
+.env
+data/
+web/data.json
+web/fuel.json
+web/performance.json
+.DS_Store
+
+# Build and test scratch
+tests/golden/
+analytics/node_modules/
+ios/**/.build/
+ios/*.xcodeproj/
+.superpowers/
+ios/I20Core/.swiftpm/
+
+# Private inputs, signing, exports and local provider configuration
+.env.*
+!.env.example
+*.local.*
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.mobileprovision
+*.p12
+*.p8
+*.pem
+*.key
+*.cer
+*.ipa
+*.xcarchive/
+*.log
+*.sqlite*
+*.db
+*.csv
+SERVICE*
+service_log.json
+i20_book/
+.pytest_cache/
+.swiftpm/

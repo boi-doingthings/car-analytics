@@ -1,0 +1,1 @@
+{"retCode": "S", "resCode": "0000", "resMsg": {"engine": false, "doorLock": true, "lowFuelLight": false, "fuelLevel": 70, "dte": {"value": 300, "unit": 1}, "battery": {"batState": 0}, "time": "20261002200000"}, "msgId": "00000000-0000-0000-0000-000000000000"}

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>i20 Performance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Saira:wdth,wght@75..125,300..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="performance.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="index.html">i20 Logbook</a>
+    <nav aria-label="Pages">
+      <a href="index.html">Overview</a>
+      <a href="map.html">Map</a>
+      <a href="performance.html" aria-current="page">Performance</a>
+      <a href="fuel.html">Fuel</a>
+    </nav>
+    <div class="sync">
+      <span id="sync-label" class="sync-label">Loading…</span>
+      <button id="sync-btn" type="button">Sync now</button>
+    </div>
+  </header>
+
+  <main>
+    <header class="page-head">
+      <h1 id="h1"></h1>
+      <p id="lede"></p>
+      <div class="stats" id="stats"></div>
+    </header>
+
+    <section id="cycle" class="sec">
+      <h2 id="f-cycle"></h2>
+      <p class="lede">Each dot is a trip: its average speed including stops, against the fastest it went. The diamonds are the four phases of WLTC, the test cycle used for type approval.</p>
+      <div class="split wide-left">
+        <div id="c-cycle" class="chart xl"></div>
+        <div>
+          <h3>Time spent in each speed band</h3>
+          <div id="c-bands" class="chart xl"></div>
+        </div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-cycle"></div></details>
+    </section>
+
+    <section id="dynamics" class="sec">
+      <h2 id="f-dyn"></h2>
+      <p class="lede">Where the engine spends its time, by speed and acceleration. Brighter cells hold more seconds (log scale).</p>
+      <div class="split wide-left">
+        <div id="c-va" class="chart xl"></div>
+        <div>
+          <h3>Relative positive acceleration by trip type</h3>
+          <div id="c-rpa" class="chart xl"></div>
+        </div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-dyn"></div></details>
+    </section>
+
+    <section id="archetypes" class="sec">
+      <h2 id="f-arch"></h2>
+      <p class="lede" id="l-arch"></p>
+      <div class="split wide-left">
+        <div id="c-pca" class="chart xl"></div>
+        <div>
+          <h3>Silhouette score by number of clusters</h3>
+          <div id="c-sil" class="chart"></div>
+          <p class="note" id="n-sil"></p>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="tbl" id="t-clusters"></table></div>
+      <details class="method"><summary>Method</summary><div id="m-arch"></div></details>
+    </section>
+
+    <section id="scaling" class="sec">
+      <h2 id="f-pl"></h2>
+      <p class="lede" id="l-pl"></p>
+      <div id="c-pl" class="chart xl"></div>
+      <h3>Trips more than 2.5 standard errors off the fit</h3>
+      <div class="tbl-wrap"><table class="tbl" id="t-outliers"></table></div>
+      <details class="method"><summary>Method</summary><div id="m-pl"></div></details>
+    </section>
+
+    <section id="commute" class="sec">
+      <h2 id="f-com"></h2>
+      <p class="lede" id="l-com"></p>
+      <div class="stats" id="s-com"></div>
+      <div class="grid-3">
+        <div><h3>Trip time distribution</h3><div id="c-com-box" class="chart"></div></div>
+        <div><h3>Median by departure time, with IQR</h3><div id="c-com-slot" class="chart"></div></div>
+        <div><h3>Median by weekday</h3><div id="c-com-wd" class="chart"></div></div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-com"></div></details>
+    </section>
+
+    <section id="cold" class="sec">
+      <h2 id="f-cold"></h2>
+      <p class="lede" id="l-cold"></p>
+      <div class="split wide-left">
+        <div><h3>Time parked before each trip</h3><div id="c-soak" class="chart"></div></div>
+        <div class="stats single" id="s-cold"></div>
+      </div>
+      <details class="method"><summary>Method</summary><div id="m-cold"></div></details>
+    </section>
+
+    <section id="corr" class="sec">
+      <h2 id="f-corr"></h2>
+      <p class="lede" id="f-corr-lede">Spearman rank correlation between trip features, across every trip on record.</p>
+      <div id="c-corr" class="chart corr"></div>
+      <details class="method"><summary>Method</summary><div id="m-corr"></div></details>
+    </section>
+
+    <section id="forecast" class="sec">
+      <h2 id="f-fc"></h2>
+      <p class="lede" id="l-fc"></p>
+      <div id="c-fc" class="chart xl"></div>
+      <h3>Kilometres per week</h3>
+      <div id="c-weekly" class="chart"></div>
+      <details class="method"><summary>Method</summary><div id="m-fc"></div></details>
+    </section>
+
+    <section id="trends" class="sec">
+      <h2 id="f-trend"></h2>
+      <p class="lede">Month by month. Each panel has its own scale.</p>
+      <div class="multiples">
+        <div><h3>Median moving speed (km/h)</h3><div id="c-m1" class="chart sm"></div></div>
+        <div><h3>Median idle share</h3><div id="c-m2" class="chart sm"></div></div>
+        <div><h3>Engine hours</h3><div id="c-m3" class="chart sm"></div></div>
+        <div><h3>Alerts per 1,000 km</h3><div id="c-m4" class="chart sm"></div></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" id="foot"></footer>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="common.js"></script>
+  <script src="performance.js"></script>
+</body>
+</html>
