@@ -44,7 +44,8 @@ DerivedData/
 *.sqlite*
 *.db
 *.csv
-SERVICE*
+/SERVICE*.jpg
+/SERVICE*.jpeg
 service_log.json
 i20_book/
 .pytest_cache/

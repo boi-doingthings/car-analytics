@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "id": "22222222-2222-4222-8222-222222222222",
+  "entered_at": "2026-01-01T12:00:00+05:30",
+  "date": "2025-09-19",
+  "odometer_km": 10500,
+  "kind": "Paid service",
+  "workshop": "Test Motors",
+  "invoice": "INV-001",
+  "parts": [
+    {
+      "code": "P-100",
+      "name": "Engine oil",
+      "qty": 3.6,
+      "unit": "L",
+      "amount": 1800.5,
+      "resets": [
+        "engine_oil"
+      ]
+    },
+    {
+      "code": "P-200",
+      "name": "Oil filter",
+      "qty": 1,
+      "amount": 350
+    }
+  ],
+  "labour": [
+    {
+      "code": "L-1",
+      "name": "Oil change labour",
+      "amount": 500
+    }
+  ],
+  "parts_total": 2150.5,
+  "gst": 450.25,
+  "total": 3100.75,
+  "notes": "Synthetic visit",
+  "photos": []
+}
