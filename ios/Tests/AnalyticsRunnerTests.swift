@@ -42,9 +42,9 @@ final class AnalyticsRunnerTests: XCTestCase {
 
         // Written to derived/, nothing added to the book.
         for name in ["data.json", "fuel.json", "performance.json"] {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: derived.appending(path: name).path), name)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: runner.derivedDir.appending(path: name).path), name)
         }
-        XCTAssertEqual(try Data(contentsOf: derived.appending(path: "data.json")), out.data)
+        XCTAssertEqual(try Data(contentsOf: runner.derivedDir.appending(path: "data.json")), out.data)
         XCTAssertEqual(try book.allFiles(under: ""), before)
     }
 
@@ -96,10 +96,11 @@ final class AnalyticsRunnerTests: XCTestCase {
         try FileManager.default.createDirectory(at: derived, withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: derived.appending(path: "fuel.json"))
 
-        let out = try await AnalyticsRunner(derivedDir: derived).run(book: book, today: "2026-10-26")
+        let runner = AnalyticsRunner(derivedDir: derived)
+        let out = try await runner.run(book: book, today: "2026-10-26")
 
         XCTAssertNil(out.fuel)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: derived.appending(path: "fuel.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runner.derivedDir.appending(path: "fuel.json").path))
     }
 
     func test_placeholderKeepsLastOutputsAndReportsDownloading() async throws {
@@ -149,4 +150,120 @@ final class AnalyticsRunnerTests: XCTestCase {
         let d = Date(timeIntervalSince1970: 1_792_958_400)
         XCTAssertEqual(AnalyticsRunner.istDay(d), "2026-10-26")
     }
+    func test_failedPageKeepsEntirePreviousGeneration() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let runner = AnalyticsRunner(derivedDir: root)
+        let previous = try await runner.run(book: book, today: "2026-10-26")
+        let directory = runner.derivedDir
+        let manifest = try Data(contentsOf: root.appending(path: "current.json"))
+        let badScript = tmp.appending(path: "failed.js")
+        // Even when two pages produced valid data, one failed page must prevent all publication.
+        try Data("""
+            globalThis.I20Analytics = { runAll: function() {
+                return { data: {revision: "partial"}, performance: {revision: "partial"}, fuel: null,
+                         errors: [{page: "fuel", message: "test failure"}], warnings: [] };
+            }};
+            """.utf8).write(to: badScript)
+        let failed = AnalyticsRunner(derivedDir: root, script: badScript)
+        do {
+            _ = try await failed.run(book: book, today: "2026-10-26")
+            XCTFail("expected page failure")
+        } catch {
+            XCTAssertEqual(error as? AnalyticsError, .failed(["fuel: test failure"]))
+        }
+        XCTAssertEqual(failed.derivedDir, directory)
+        XCTAssertEqual(try Data(contentsOf: root.appending(path: "current.json")), manifest)
+        XCTAssertEqual(try Data(contentsOf: directory.appending(path: "data.json")), previous.data)
+        XCTAssertEqual(try Data(contentsOf: directory.appending(path: "performance.json")), previous.performance)
+        XCTAssertEqual(try Data(contentsOf: directory.appending(path: "fuel.json")), previous.fuel)
+    }
+
+    func test_successfulGenerationsAreCompleteAndOldReaderRemainsValid() async throws {
+        let book = try fixtureBook()
+        let runner = AnalyticsRunner(derivedDir: tmp.appending(path: "derived"))
+        let first = try await runner.run(book: book, today: "2026-10-26")
+        let firstDirectory = runner.derivedDir
+        XCTAssertNotNil(runner.publishedAt)
+        XCTAssertTrue(runner.matches(book))
+        let manifestText = try String(contentsOf: tmp.appending(path: "derived/current.json"), encoding: .utf8)
+        XCTAssertFalse(manifestText.contains(book.root.path), "the local cache must not record a personal folder path")
+        for name in try book.list("log/refuels") { try book.delete("log/refuels/\(name)") }
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        XCTAssertNotEqual(runner.derivedDir, firstDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runner.derivedDir.appending(path: "fuel.json").path))
+        XCTAssertEqual(try Data(contentsOf: firstDirectory.appending(path: "data.json")), first.data)
+        XCTAssertEqual(try Data(contentsOf: firstDirectory.appending(path: "fuel.json")), first.fuel)
+    }
+
+    func test_cancellationDoesNotSwitchGenerationAndCleansUnpublishedDirectory() async throws {
+        let root = tmp.appending(path: "derived")
+        let store = AnalyticsGeneration(root: root)
+        let old = Data("old".utf8)
+        try store.publish(data: old, fuel: old, performance: old)
+        let directory = store.directory
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try store.publish(data: Data("new".utf8), fuel: nil, performance: Data("new".utf8))
+        }
+        do { try await task.value; XCTFail("expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(store.directory, directory)
+        XCTAssertEqual(try Data(contentsOf: directory.appending(path: "data.json")), old)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "generations").path).count, 1)
+    }
+
+    func test_manifestCannotEscapeCacheDirectory() throws {
+        let root = tmp.appending(path: "derived")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"schema":1,"generation":"../../outside","publishedAt":0}"#.utf8)
+            .write(to: root.appending(path: "current.json"))
+        XCTAssertEqual(AnalyticsGeneration(root: root).directory, root)
+    }
+
+    func test_failedManifestWritePreservesPublishedDataAndCleansStaging() throws {
+        let root = tmp.appending(path: "derived")
+        let store = AnalyticsGeneration(root: root)
+        let data = Data("old".utf8)
+        try store.publish(data: data, fuel: data, performance: data)
+        let directory = store.directory
+        let previous = try Data(contentsOf: root.appending(path: "current.json"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path) }
+        XCTAssertThrowsError(try store.publish(data: Data("new".utf8), fuel: nil, performance: Data("new".utf8)))
+        XCTAssertEqual(store.directory, directory)
+        XCTAssertEqual(try Data(contentsOf: root.appending(path: "current.json")), previous)
+        XCTAssertEqual(try Data(contentsOf: directory.appending(path: "data.json")), data)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "generations").path).count, 1)
+    }
+
+    func test_generationRetentionKeepsCurrentTwoPreviousAndRecentReaders() throws {
+        let root = tmp.appending(path: "derived")
+        let store = AnalyticsGeneration(root: root)
+        let data = Data("{}".utf8)
+        try store.publish(data: data, fuel: nil, performance: data)
+        let current = store.directory
+        let now = Date()
+        var previous: [URL] = []
+        for days in [5.0, 4.0, 3.0, 2.0, 0.5] {
+            let directory = root.appending(path: "generations/\(UUID().uuidString.lowercased())")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: directory.appending(path: "data.json"))
+            try data.write(to: directory.appending(path: "performance.json"))
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-days * 86400)], ofItemAtPath: directory.path)
+            previous.append(directory)
+        }
+        // An incomplete revision left by a crash is also removed only after the grace period.
+        let abandoned = root.appending(path: "generations/\(UUID().uuidString.lowercased())")
+        try FileManager.default.createDirectory(at: abandoned, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3 * 86400)], ofItemAtPath: abandoned.path)
+        store.prune(now: now)
+        XCTAssertEqual(store.directory, current)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+        for (index, directory) in previous.enumerated() {
+            XCTAssertEqual(FileManager.default.fileExists(atPath: directory.path), index >= 3)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+    }
+
 }

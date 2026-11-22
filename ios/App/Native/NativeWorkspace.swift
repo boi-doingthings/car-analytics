@@ -1,0 +1,102 @@
+import SwiftUI
+
+/// A single native navigation hierarchy over one complete analytical generation.
+struct NativeWorkspace: View {
+    @EnvironmentObject private var folder: FolderAccess
+    @EnvironmentObject private var sync: SyncCoordinator
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var snapshot: AnalyticsSnapshot?
+    @State private var loadError: String?
+    @State private var showSettings = false
+    @State private var loadRevision = 0
+    @State private var selectedTab: Int = {
+        #if DEBUG
+        if DebugHarness.active, let raw = ProcessInfo.processInfo.environment["I20_DEBUG_TAB"],
+           let tab = Int(raw), (0...3).contains(tab) { return tab }
+        #endif
+        return 0
+    }()
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            NativeHomeView(snapshot: snapshot, onSettings: { showSettings = true })
+                .tabItem { Label("Today", systemImage: "gauge.with.dots.needle.33percent") }
+                .tag(0)
+                .accessibilityIdentifier("todayScreen")
+            NativeTripsView(snapshot: snapshot, onSettings: { showSettings = true })
+                .tabItem { Label("Trips", systemImage: "point.topleft.down.curvedto.point.bottomright.up") }
+                .tag(1)
+            NativeGarageView(snapshot: snapshot, onSettings: { showSettings = true })
+                .tabItem { Label("Garage", systemImage: "car.side") }
+                .tag(2)
+            NativeLabView(snapshot: snapshot, onSettings: { showSettings = true })
+                .tabItem { Label("Lab", systemImage: "waveform.path.ecg") }
+                .tag(3)
+        }
+        .tint(NativeTheme.accent)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let loadError {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(loadError).font(.caption)
+                    Spacer(minLength: 0)
+                    Button("Retry") { loadRevision += 1 }
+                }
+                .padding(12)
+                .background(.regularMaterial)
+                .accessibilityIdentifier("snapshotError")
+            }
+        }
+        .sheet(isPresented: $showSettings, onDismiss: startRefresh) {
+            SettingsView()
+                .safeAreaInset(edge: .top) {
+                    HStack {
+                        Spacer()
+                        Button("Done") { showSettings = false }.padding(.horizontal)
+                    }.padding(.top, 8).background(.regularMaterial)
+                }
+        }
+        .task(id: loadRevision) { await loadSnapshot() }
+        .task(id: folder.book?.root) {
+            snapshot = nil
+            loadError = nil
+            loadRevision += 1
+            // Re-picking an archive must invalidate the old archive’s read models immediately.
+            if sync.hasCurrentArchiveSnapshot { startRefresh() }
+            else { sync.rebuild() }
+        }
+        .onChange(of: sync.finishedRuns) { _, _ in loadRevision += 1 }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { startRefresh() } }
+    }
+
+    private func startRefresh() {
+        if Credentials.load() == nil && !DebugHarness.active {
+            // An existing portable archive remains useful without a working online account.
+            sync.rebuild()
+        } else {
+            sync.syncIfStale()
+        }
+    }
+
+    @MainActor
+    private func loadSnapshot() async {
+        let archive = folder.book?.root
+        let directory = sync.derivedDir
+        do {
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                try AnalyticsSnapshot.load(from: directory)
+            }.value
+            try Task.checkCancellation()
+            guard folder.book?.root == archive else { return }
+            snapshot = loaded
+            loadError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, folder.book?.root == archive else { return }
+            // No output is expected on first launch. Preserve any previous in-memory snapshot.
+            let hasOutput = FileManager.default.fileExists(atPath: directory.appending(path: "data.json").path)
+            loadError = hasOutput ? "The saved analysis couldn’t be opened. Your logbook is unchanged. Try rebuilding in Settings." : nil
+        }
+    }
+}

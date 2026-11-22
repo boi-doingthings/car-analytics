@@ -46,7 +46,7 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertNil(sync.state.error)
         XCTAssertNotNil(sync.state.lastSync)
         XCTAssertEqual(sync.state.issues, [])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.appending(path: "derived/data.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sync.derivedDir.appending(path: "data.json").path))
     }
 
     func test_newRunClearsPreviousIssuesAndStats() async throws {
@@ -136,6 +136,99 @@ final class SyncCoordinatorTests: XCTestCase {
         await sync.task?.value
         XCTAssertEqual(logins, 0)
         XCTAssertNil(sync.state.error)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.appending(path: "derived/data.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sync.derivedDir.appending(path: "data.json").path))
     }
+    func test_editsDuringSyncCoalesceIntoFollowupWithinSameTask() async throws {
+        let book = try fixtureBook()
+        var releaseLogin: (() -> Void)?
+        var logins = 0
+        let sync = coordinator(book: book) { _, _ in
+            logins += 1
+            await withCheckedContinuation { continuation in
+                releaseLogin = { continuation.resume() }
+            }
+            return EmptyAPI()
+        }
+        sync.syncNow()
+        for _ in 0..<100 where releaseLogin == nil { await Task.yield() }
+        let release = try XCTUnwrap(releaseLogin)
+        sync.rebuild()
+        sync.rebuild()
+        sync.rebuild()
+        release()
+        await sync.task?.value
+        XCTAssertFalse(sync.state.running)
+        XCTAssertNil(sync.state.error)
+        XCTAssertEqual(logins, 1, "queued edits must never log in again")
+        XCTAssertEqual(sync.finishedRuns, 1, "publish one UI refresh after the complete sequence")
+        XCTAssertNotNil(sync.state.lastAnalysis)
+        let generations = tmp.appending(path: "derived/generations")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: generations.path).count, 2,
+                       "one original analysis plus one coalesced follow-up")
+    }
+
+    func test_pendingEditRebuildsCachedDataEvenWhenLoginFails() async throws {
+        let book = try fixtureBook()
+        let sync = coordinator(book: book) { _, _ in throw BluelinkError.loginFailed }
+        sync.syncNow()
+        sync.rebuild()
+        await sync.task?.value
+        XCTAssertEqual(sync.state.error, SyncCoordinator.loginText)
+        XCTAssertNotNil(sync.state.lastAnalysis)
+        XCTAssertEqual(sync.finishedRuns, 1, "native cached data must still refresh after the saved edit")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sync.derivedDir.appending(path: "data.json").path))
+    }
+
+    func test_switchingArchivesDoesNotExposePreviousCachedGeneration() async throws {
+        let first = try fixtureBook()
+        let otherRoot = tmp.appending(path: "other/i20_book")
+        try FileManager.default.createDirectory(at: otherRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: first.root, to: otherRoot)
+        let second = Book(root: otherRoot)
+        var selected = first
+        let sync = SyncCoordinator(book: { selected }, runner: AnalyticsRunner(derivedDir: tmp.appending(path: "derived")))
+        sync.rebuild()
+        await sync.task?.value
+        XCTAssertTrue(sync.hasCurrentArchiveSnapshot)
+        let previous = sync.derivedDir
+        selected = second
+        XCTAssertFalse(sync.hasCurrentArchiveSnapshot)
+        XCTAssertNotEqual(sync.derivedDir, previous)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sync.derivedDir.appending(path: "data.json").path))
+        sync.rebuild()
+        await sync.task?.value
+        XCTAssertTrue(sync.hasCurrentArchiveSnapshot)
+        XCTAssertNotEqual(sync.derivedDir, previous)
+    }
+
+    func test_unknownLegacyCacheRequiresRebuildForSelectedArchive() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: root.appending(path: "data.json"))
+        let sync = SyncCoordinator(book: { book }, runner: AnalyticsRunner(derivedDir: root))
+        XCTAssertFalse(sync.hasCurrentArchiveSnapshot)
+        XCTAssertNotEqual(sync.derivedDir, root)
+        XCTAssertNil(sync.state.lastAnalysis)
+    }
+
+    func test_failedRebuildOfNewArchiveClearsPreviousArchiveTimestamps() async throws {
+        let first = try fixtureBook()
+        try first.writeAtomic("state/last_sync.json", Data(#"{"last_sync":"2026-10-05T20:00:00+05:30"}"#.utf8))
+        var selected = first
+        let sync = SyncCoordinator(book: { selected }, runner: AnalyticsRunner(derivedDir: tmp.appending(path: "derived")))
+        sync.rebuild()
+        await sync.task?.value
+        XCTAssertNotNil(sync.state.lastAnalysis)
+        XCTAssertNotNil(sync.state.lastSync)
+        selected = Book(root: tmp.appending(path: "missing/i20_book"))
+        sync.rebuild()
+        XCTAssertNil(sync.state.lastAnalysis)
+        XCTAssertNil(sync.state.lastSync)
+        await sync.task?.value
+        XCTAssertNotNil(sync.state.error)
+        XCTAssertNil(sync.state.lastAnalysis)
+        XCTAssertNil(sync.state.lastSync)
+    }
+
 }

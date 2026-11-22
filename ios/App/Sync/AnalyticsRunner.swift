@@ -33,9 +33,17 @@ final class AnalyticsRunner {
     /// How long to wait for one iCloud placeholder to download.
     static let defaultDownloadTimeout: TimeInterval = 30
 
-    private static let log = Logger(subsystem: "com.i20logbook.app", category: "analytics")
-
-    let derivedDir: URL
+    private let storageRoot: URL
+    private let worker = AnalyticsWorker()
+    var derivedDir: URL { AnalyticsGeneration(root: storageRoot).directory }
+    var publishedAt: Date? { AnalyticsGeneration(root: storageRoot).manifest?.publishedAt }
+    func matches(_ book: Book) -> Bool {
+        AnalyticsGeneration(root: storageRoot).manifest?.archiveID == AnalyticsGeneration.archiveID(for: book.root)
+    }
+    func unavailableDirectory(for book: Book) -> URL {
+        storageRoot.appending(path: "unavailable", directoryHint: .isDirectory)
+            .appending(path: AnalyticsGeneration.archiveID(for: book.root), directoryHint: .isDirectory)
+    }
     let script: URL?
     /// How long to wait for one iCloud placeholder to download.
     var downloadTimeout: TimeInterval = AnalyticsRunner.defaultDownloadTimeout
@@ -46,7 +54,7 @@ final class AnalyticsRunner {
 
     init(derivedDir: URL = AnalyticsRunner.defaultDerivedDir,
          script: URL? = Bundle.main.url(forResource: "analytics", withExtension: "js")) {
-        self.derivedDir = derivedDir
+        self.storageRoot = derivedDir
         self.script = script
     }
 
@@ -60,10 +68,66 @@ final class AnalyticsRunner {
     }
 
     func run(book: Book, today: String) async throws -> (data: Data, fuel: Data?, performance: Data) {
+        issues = []
+        let result = await worker.perform(book: book, today: today, script: script,
+                                          storageRoot: storageRoot, downloadTimeout: downloadTimeout)
+        issues = result.issues
+        return try result.output.get()
+    }
+
+    /// Skipped-entry warnings from the analytics ("skipping entry <id>: reason") that `skippedEntries` hasn't
+    /// already reported under the entry's file name.
+    static func newWarnings(_ warnings: [String], besides issues: [String]) -> [String] {
+        warnings.filter { w in
+            guard w.hasPrefix("skipping entry "), let colon = w.firstIndex(of: ":") else { return true }
+            let id = w[w.index(w.startIndex, offsetBy: "skipping entry ".count)..<colon]
+            return id == "?" || !issues.contains { $0.contains("/\(id).json") }
+        }
+    }
+
+    /// A kind whose folder can't be listed/read here (e.g. an entry left as a placeholder, already reported
+    /// above) contributes nothing.
+    fileprivate static func skippedEntries(_ book: Book) -> [String] {
+        func describe(_ kind: EntryKind, _ s: [SkippedEntry]) -> [String] {
+            s.map { e in
+                switch e.reason {
+                case .newerSchema(let v): "\(kind.dir)/\(e.name): written by a newer app (schema \(v)), left out"
+                case .unreadable: "\(kind.dir)/\(e.name): couldn't be read, left out"
+                case .badName: "\(kind.dir)/\(e.name): not an entry file (a duplicate or stray file), left out"
+                }
+            }
+        }
+        return describe(.refuel, (try? loadAll(Refuel.self, from: book))?.skipped ?? [])
+            + describe(.service, (try? loadAll(ServiceVisit.self, from: book))?.skipped ?? [])
+            + describe(.maintenance, (try? loadAll(Maintenance.self, from: book))?.skipped ?? [])
+    }
+}
+
+private struct AnalyticsRunResult {
+    let output: Result<(data: Data, fuel: Data?, performance: Data), Error>
+    let issues: [String]
+}
+
+private actor AnalyticsWorker {
+    private var issues: [String] = []
+    private static let log = Logger(subsystem: "com.i20logbook.app", category: "analytics-worker")
+
+    func perform(book: Book, today: String, script: URL?, storageRoot: URL,
+                 downloadTimeout: TimeInterval) async -> AnalyticsRunResult {
+        issues = []
+        do {
+            let out = try await run(book: book, today: today, script: script,
+                                    storageRoot: storageRoot, downloadTimeout: downloadTimeout)
+            return AnalyticsRunResult(output: .success(out), issues: issues)
+        } catch {
+            return AnalyticsRunResult(output: .failure(error), issues: issues)
+        }
+    }
+
+    private func run(book: Book, today: String, script: URL?, storageRoot: URL, downloadTimeout: TimeInterval) async throws -> (data: Data, fuel: Data?, performance: Data) {
         guard let script, let source = try? String(contentsOf: script, encoding: .utf8) else {
             throw AnalyticsError.bundleMissing
         }
-        self.issues = []
         var issues: [String] = []
         let started = Date()
 
@@ -71,15 +135,21 @@ final class AnalyticsRunner {
         let paths = try (book.allFiles(under: "raw") + book.allFiles(under: "log"))
             .filter { $0.hasSuffix(".json") && !$0.hasSuffix(".meta.json") }
         let timeout = downloadTimeout
+        // Bound cloud requests: a large archive must not create thousands of simultaneous tasks.
         let missing = await withTaskGroup(of: String?.self) { group in
-            for p in paths {
+            var pending = paths.makeIterator()
+            func add(_ path: String) {
                 group.addTask {
-                    do { try await book.ensureDownloaded(p, timeout: timeout); return nil }
-                    catch { return p }
+                    do { try await book.ensureDownloaded(path, timeout: timeout); return nil }
+                    catch { return path }
                 }
             }
+            for _ in 0..<min(4, paths.count) { if let p = pending.next() { add(p) } }
             var out = Set<String>()
-            for await p in group { if let p { out.insert(p) } }
+            for await p in group {
+                if let p { out.insert(p) }
+                if let next = pending.next(), !Task.isCancelled { add(next) }
+            }
             return out
         }
         try Task.checkCancellation()
@@ -90,7 +160,7 @@ final class AnalyticsRunner {
         }
 
         // Log entries Swift can't read (newer schema, bad shape) are listed; the JS skips newer schemas too.
-        issues += skippedEntries(book)
+        issues += AnalyticsRunner.skippedEntries(book)
 
         // 2. Evaluate the bundle and hand it the files.
         let ctx: JSContext = JSContext()
@@ -134,56 +204,25 @@ final class AnalyticsRunner {
         }
         let errors = (out?.objectForKeyedSubscript("errors")?.toArray() as? [String]) ?? []
         issues += errors
-        issues += Self.newWarnings((out?.objectForKeyedSubscript("warnings")?.toArray() as? [String]) ?? [], besides: issues)
+        issues += AnalyticsRunner.newWarnings((out?.objectForKeyedSubscript("warnings")?.toArray() as? [String]) ?? [], besides: issues)
         self.issues = issues
 
-        // 4. Write what was built; a missing fuel output (no usable refuels) removes the stale file.
-        let data = string("data").map { Data($0.utf8) }
-        let fuel = string("fuel").map { Data($0.utf8) }
-        let performance = string("performance").map { Data($0.utf8) }
-        let fm = FileManager.default
-        do {
-            try fm.createDirectory(at: derivedDir, withIntermediateDirectories: true)
-            if let data { try data.write(to: derivedDir.appending(path: "data.json"), options: .atomic) }
-            if let performance { try performance.write(to: derivedDir.appending(path: "performance.json"), options: .atomic) }
-            let fuelURL = derivedDir.appending(path: "fuel.json")
-            if let fuel { try fuel.write(to: fuelURL, options: .atomic) }
-            else if fm.fileExists(atPath: fuelURL.path) { try fm.removeItem(at: fuelURL) }
-        } catch {
-            throw AnalyticsError.saveFailed(error.localizedDescription)
-        }
-
-        Self.log.info("analytics: \(paths.count) files in \(Date().timeIntervalSince(started), format: .fixed(precision: 2)) s, \(issues.count) issues")
-        guard let data, let performance else {
+        // Publish only a complete successful revision. A missing fuel output with no error means
+        // there are no usable fills; it intentionally has no fuel.json in the new generation.
+        guard errors.isEmpty, let data = string("data").map({ Data($0.utf8) }),
+              let performance = string("performance").map({ Data($0.utf8) }) else {
             throw AnalyticsError.failed(errors.isEmpty ? ["no output"] : errors)
         }
+        let fuel = string("fuel").map { Data($0.utf8) }
+        try Task.checkCancellation()
+        do {
+            try AnalyticsGeneration(root: storageRoot).publish(data: data, fuel: fuel, performance: performance,
+                archiveID: AnalyticsGeneration.archiveID(for: book.root))
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw AnalyticsError.saveFailed("local cache write failed") }
+
+        Self.log.info("analytics: \(paths.count) files in \(Date().timeIntervalSince(started), format: .fixed(precision: 2)) s, \(issues.count) issues")
         return (data, fuel, performance)
     }
 
-    /// Skipped-entry warnings from the analytics ("skipping entry <id>: reason") that `skippedEntries` hasn't
-    /// already reported under the entry's file name.
-    static func newWarnings(_ warnings: [String], besides issues: [String]) -> [String] {
-        warnings.filter { w in
-            guard w.hasPrefix("skipping entry "), let colon = w.firstIndex(of: ":") else { return true }
-            let id = w[w.index(w.startIndex, offsetBy: "skipping entry ".count)..<colon]
-            return id == "?" || !issues.contains { $0.contains("/\(id).json") }
-        }
-    }
-
-    /// A kind whose folder can't be listed/read here (e.g. an entry left as a placeholder, already reported
-    /// above) contributes nothing.
-    private func skippedEntries(_ book: Book) -> [String] {
-        func describe(_ kind: EntryKind, _ s: [SkippedEntry]) -> [String] {
-            s.map { e in
-                switch e.reason {
-                case .newerSchema(let v): "\(kind.dir)/\(e.name): written by a newer app (schema \(v)), left out"
-                case .unreadable: "\(kind.dir)/\(e.name): couldn't be read, left out"
-                case .badName: "\(kind.dir)/\(e.name): not an entry file (a duplicate or stray file), left out"
-                }
-            }
-        }
-        return describe(.refuel, (try? loadAll(Refuel.self, from: book))?.skipped ?? [])
-            + describe(.service, (try? loadAll(ServiceVisit.self, from: book))?.skipped ?? [])
-            + describe(.maintenance, (try? loadAll(Maintenance.self, from: book))?.skipped ?? [])
-    }
 }

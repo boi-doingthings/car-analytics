@@ -21,7 +21,10 @@ final class RefuelUITests: XCTestCase {
         app.resetAuthorizationStatus(for: .location)
         app.launch()
 
-        app.tabBars.buttons["Log"].tap()
+        app.tabBars.buttons["Garage"].tap()
+        let openLogbook = app.buttons["openLogbook"]
+        for _ in 0..<5 where !openLogbook.isHittable { app.swipeUp() }
+        openLogbook.tap()
         app.buttons["refuelButton"].tap()
         dismissLocationPrompt()
 

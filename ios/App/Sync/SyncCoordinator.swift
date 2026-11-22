@@ -9,6 +9,8 @@ struct SyncState: Equatable {
     var error: String?
     /// From `state/last_sync.json` in the book (written by the collector).
     var lastSync: Date?
+    /// Publication time of the last complete analytical generation on this device.
+    var lastAnalysis: Date?
     /// Non-fatal problems of the last run: collector errors, analytics errors, skipped files/entries.
     var issues: [String] = []
     /// Collector summary of the last full sync.
@@ -29,7 +31,7 @@ final class SyncCoordinator: ObservableObject {
     @Published private(set) var state = SyncState()
     /// The running sync/rebuild (tests await it).
     private(set) var task: Task<Void, Never>?
-    /// Bumped when a run finishes without error, so the dashboard can reload.
+    /// Bumped after a sequence publishes data, including a local rebuild following a failed login.
     @Published private(set) var finishedRuns = 0
 
     private let book: () -> Book?
@@ -38,6 +40,7 @@ final class SyncCoordinator: ObservableObject {
     private let runner: AnalyticsRunner
     private let now: () -> Date
     private let collectorPause: Duration
+    private var rebuildPending = false
 
     init(book: @escaping () -> Book?,
          credentials: @escaping () -> (String, String)? = { Credentials.load() },
@@ -51,6 +54,7 @@ final class SyncCoordinator: ObservableObject {
         self.runner = runner
         self.now = now
         self.collectorPause = collectorPause
+        self.state.lastAnalysis = book().flatMap { runner.matches($0) ? runner.publishedAt : nil }
     }
 
     static func liveLogin(username: String, password: String) async throws -> BluelinkAPI {
@@ -59,13 +63,18 @@ final class SyncCoordinator: ObservableObject {
         return client
     }
 
-    var derivedDir: URL { runner.derivedDir }
+    /// Never expose another selected archive's cached values as this archive's data.
+    var derivedDir: URL {
+        guard let selected = book() else { return runner.derivedDir }
+        return runner.matches(selected) ? runner.derivedDir : runner.unavailableDirectory(for: selected)
+    }
+    var hasCurrentArchiveSnapshot: Bool { book().map { runner.matches($0) } ?? false }
 
     /// Re-reads `state/last_sync.json` from the book (no wait for an iCloud download).
     func refreshLastSync() {
         guard let book = book(), let data = try? book.read("state/last_sync.json"),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let s = obj["last_sync"] as? String else { return }
+              let s = obj["last_sync"] as? String else { state.lastSync = nil; return }
         state.lastSync = Self.parseISO(s)
     }
 
@@ -97,48 +106,73 @@ final class SyncCoordinator: ObservableObject {
         guard !state.running else { return }
         begin(step: "login")
         state.stats = nil  // a full sync replaces the summary; an analytics-only rebuild keeps the last one
-        task = Task { await self.fullSync() }
+        task = Task { await self.runSequence(collect: true) }
     }
 
-    /// Analytics only (after a log edit). No-op while a run is going.
+    /// Coalesce edits arriving during a run, then rebuild from the latest saved archive before
+    /// completing the same task. Callers awaiting task.value also await this follow-up work.
     func rebuild() {
-        guard !state.running else { return }
+        if state.running {
+            rebuildPending = true
+            return
+        }
         begin(step: "analyse")
-        task = Task {
+        task = Task { await self.runSequence(collect: false) }
+    }
+
+    private func runSequence(collect: Bool) async {
+        var error: String?
+        var published = false
+        var collectionFailed = false
+        do {
+            if collect { try await fullSync() }
+            else {
+                guard let book = book() else { throw BookError.unreachable }
+                try await analyse(book, collectorIssues: [])
+            }
+            published = true
+        } catch let failure {
+            error = Self.text(for: failure)
+            collectionFailed = collect
+        }
+        while rebuildPending && !Task.isCancelled {
+            rebuildPending = false
+            state.step = "analyse"
             do {
-                guard let book = self.book() else { throw BookError.unreachable }
-                try await self.analyse(book, collectorIssues: [])
-                self.finish(error: nil)
-            } catch {
-                self.finish(error: Self.text(for: error))
+                guard let book = book() else { throw BookError.unreachable }
+                try await analyse(book, collectorIssues: state.stats?.errors ?? [])
+                published = true
+                if !collectionFailed { error = nil }
+            } catch let failure {
+                error = Self.text(for: failure)
             }
         }
+        rebuildPending = false
+        finish(error: error, published: published)
     }
 
     private func begin(step: String) {
         state.running = true
         state.step = step
         state.error = nil
+        state.lastAnalysis = hasCurrentArchiveSnapshot ? runner.publishedAt : nil
+        refreshLastSync()
+        if !hasCurrentArchiveSnapshot { state.stats = nil }
         // An aborted run must not show the previous run's numbers.
         state.issues = []
     }
 
-    private func fullSync() async {
-        do {
-            guard let book = book() else { throw BookError.unreachable }
-            _ = try book.list("")  // folder reachable before any network call
-            guard let (user, pass) = credentials() else { throw BluelinkError.loginFailed }
-            let api = try await login(user, pass)
-            state.step = "collect"
-            let stats = try await Collector(book: book, api: api, now: { Date() }, pause: collectorPause).run()
-            state.stats = stats
-            refreshLastSync()
-            state.step = "analyse"
-            try await analyse(book, collectorIssues: stats.errors)
-            finish(error: nil)
-        } catch {
-            finish(error: Self.text(for: error))
-        }
+    private func fullSync() async throws {
+        guard let book = book() else { throw BookError.unreachable }
+        _ = try book.list("")  // folder reachable before any network call
+        guard let (user, pass) = credentials() else { throw BluelinkError.loginFailed }
+        let api = try await login(user, pass)
+        state.step = "collect"
+        let stats = try await Collector(book: book, api: api, now: { Date() }, pause: collectorPause).run()
+        state.stats = stats
+        refreshLastSync()
+        state.step = "analyse"
+        try await analyse(book, collectorIssues: stats.errors)
     }
 
     private func analyse(_ book: Book, collectorIssues: [String]) async throws {
@@ -146,13 +180,16 @@ final class SyncCoordinator: ObservableObject {
         let today = AnalyticsRunner.istDay(now())
         defer { state.issues = collectorIssues + runner.issues }
         _ = try await runner.run(book: book, today: today)
+        if self.book()?.root != book.root { rebuildPending = true }
+        state.lastAnalysis = hasCurrentArchiveSnapshot ? runner.publishedAt : nil
+        refreshLastSync()
     }
 
-    private func finish(error: String?) {
+    private func finish(error: String?, published: Bool) {
         state.running = false
         state.step = nil
         state.error = error
-        if error == nil { finishedRuns += 1 }
+        if published { finishedRuns += 1 }
     }
 
     static func text(for error: Error) -> String {

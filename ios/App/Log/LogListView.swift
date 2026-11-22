@@ -6,6 +6,7 @@ enum LogText {
     static let deleteFailed = "Couldn't delete from iCloud Drive (i20_book)."
     static let photosNotDeleted = "The entry was deleted, but its photos couldn't be removed from iCloud Drive (i20_book)."
     static let loadFailed = "Can't read the log in iCloud Drive (i20_book)."
+    static let archiveChanged = "The selected logbook or entry changed. Reload it before editing or deleting."
     static let stillDownloading = "Some entries are still downloading from iCloud \u{2014} pull to refresh."
 }
 
@@ -116,6 +117,13 @@ final class LogStore: ObservableObject {
     @Published var actionError: String?
 
     static let downloadTimeout: TimeInterval = 30
+    private let placeholderTimeout: TimeInterval
+    private var loadRevision = 0
+    private(set) var archiveRoot: URL?
+
+    init(downloadTimeout: TimeInterval = LogStore.downloadTimeout) {
+        self.placeholderTimeout = downloadTimeout
+    }
 
     var refuels: [Refuel] { items.compactMap { if case .refuel(let r) = $0 { r } else { nil } } }
 
@@ -124,26 +132,52 @@ final class LogStore: ObservableObject {
     }
 
     func load(from book: Book?) async {
+        loadRevision += 1
+        let revision = loadRevision
+        let root = book?.root
+        if archiveRoot != root {
+            // Retain cached records on a same-archive download failure only, never across archives.
+            items = []
+            skipped = 0
+            loadError = nil
+            actionError = nil
+            archiveRoot = root
+        }
         guard let book else {
             items = []
+            skipped = 0
             loadError = LogText.loadFailed
             return
         }
         do {
-            let t = Self.downloadTimeout
-            let r = try await loadAll(Refuel.self, from: book, timeout: t)
-            let s = try await loadAll(ServiceVisit.self, from: book, timeout: t)
-            let m = try await loadAll(Maintenance.self, from: book, timeout: t)
+            let r = try await loadAll(Refuel.self, from: book, timeout: placeholderTimeout)
+            let s = try await loadAll(ServiceVisit.self, from: book, timeout: placeholderTimeout)
+            let m = try await loadAll(Maintenance.self, from: book, timeout: placeholderTimeout)
+            guard revision == loadRevision, archiveRoot == root, !Task.isCancelled else { return }
             let all = r.entries.map(LogItem.refuel) + s.entries.map(LogItem.service) + m.entries.map(LogItem.maintenance)
             items = all.sorted { ($0.sortKey, $0.enteredAt, $0.id) > ($1.sortKey, $1.enteredAt, $1.id) }
             skipped = r.skipped.count + s.skipped.count + m.skipped.count
             loadError = nil
-        } catch BookError.notDownloaded, BookError.downloadFailed {
-            loadError = LogText.stillDownloading
         } catch {
-            items = []
-            loadError = LogText.loadFailed
+            guard revision == loadRevision, archiveRoot == root, !Task.isCancelled else { return }
+            switch error {
+            case BookError.notDownloaded, BookError.downloadFailed:
+                loadError = LogText.stillDownloading
+            case is CancellationError:
+                return
+            default:
+                items = []
+                skipped = 0
+                loadError = LogText.loadFailed
+            }
         }
+    }
+
+    /// A loaded record must still belong to the selected archive and retain its loaded contents.
+    /// In particular, matching UUIDs in a different archive do not grant permission to overwrite it.
+    func editingBook(for item: LogItem, in book: Book?) -> Book? {
+        guard let book, archiveRoot == book.root, items.contains(item) else { return nil }
+        return book
     }
 
     /// Deletes the entry file and, for a service, its photo folder. False (with `actionError`) if the entry
@@ -152,6 +186,10 @@ final class LogStore: ObservableObject {
     func delete(_ item: LogItem, in book: Book?) -> Bool {
         guard let book else {
             actionError = LogText.deleteFailed
+            return false
+        }
+        guard editingBook(for: item, in: book) != nil else {
+            actionError = LogText.archiveChanged
             return false
         }
         do { try book.delete(item.path) } catch {
@@ -185,6 +223,8 @@ struct LogListView: View {
     @State private var filter: LogFilter = .all
     @State private var sheet: LogSheet?
     @State private var pendingDelete: LogItem?
+    @State private var presentationArchiveRoot: URL?
+    @State private var deletionArchiveRoot: URL?
 
     enum LogSheet: Identifiable {
         case newRefuel, newService, newOther
@@ -211,10 +251,13 @@ struct LogListView: View {
                     Text(e).foregroundStyle(.red)
                 }
                 ForEach(store.visible(filter)) { item in
-                    Button { sheet = .edit(item) } label: { LogRow(item: item) }
+                    Button { present(.edit(item)) } label: { LogRow(item: item) }
                         .foregroundStyle(.primary)
                         .swipeActions {
-                            Button(role: .destructive) { pendingDelete = item } label: {
+                            Button(role: .destructive) {
+                                deletionArchiveRoot = folder.book?.root
+                                pendingDelete = item
+                            } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
@@ -227,16 +270,16 @@ struct LogListView: View {
             .navigationTitle("Log")
             .toolbar {
                 Menu {
-                    Button { sheet = .newRefuel } label: { Label("Refuel", systemImage: "fuelpump") }
-                    Button { sheet = .newService } label: { Label("Service", systemImage: "wrench.and.screwdriver") }
-                    Button { sheet = .newOther } label: { Label("Other", systemImage: "list.bullet") }
+                    Button { present(.newRefuel) } label: { Label("Refuel", systemImage: "fuelpump") }
+                    Button { present(.newService) } label: { Label("Service", systemImage: "wrench.and.screwdriver") }
+                    Button { present(.newOther) } label: { Label("Other", systemImage: "list.bullet") }
                 } label: {
                     Image(systemName: "plus")
                 }
                 .accessibilityIdentifier("addMenu")
             }
             .safeAreaInset(edge: .bottom) {
-                Button { sheet = .newRefuel } label: {
+                Button { present(.newRefuel) } label: {
                     Label("Refuel", systemImage: "fuelpump.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -246,10 +289,20 @@ struct LogListView: View {
             }
             .refreshable { await store.load(from: folder.book) }
             .task(id: folder.book?.root) { await store.load(from: folder.book) }
+            .onChange(of: folder.book?.root) { _, _ in
+                sheet = nil
+                pendingDelete = nil
+                presentationArchiveRoot = nil
+                deletionArchiveRoot = nil
+            }
             .sheet(item: $sheet) { form(for: $0) }
             .confirmationDialog("Delete this entry?", isPresented: deleteDialogShown, titleVisibility: .visible,
                                 presenting: pendingDelete) { item in
                 Button("Delete", role: .destructive) {
+                    guard deletionArchiveRoot == folder.book?.root else {
+                        store.actionError = LogText.archiveChanged
+                        return
+                    }
                     if store.delete(item, in: folder.book) { Task { await LogStore.rebuildAfterSave(sync) } }
                 }
             } message: { item in
@@ -273,6 +326,15 @@ struct LogListView: View {
         Binding(get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
     }
 
+    private func present(_ value: LogSheet) {
+        if case .edit(let item) = value, store.editingBook(for: item, in: folder.book) == nil {
+            store.actionError = LogText.archiveChanged
+            return
+        }
+        presentationArchiveRoot = folder.book?.root
+        sheet = value
+    }
+
     private func saved() {
         Task {
             await store.load(from: folder.book)
@@ -287,7 +349,7 @@ struct LogListView: View {
 
     @ViewBuilder
     private func form(for sheet: LogSheet) -> some View {
-        let book = folder.book
+        let book = folder.book?.root == presentationArchiveRoot ? folder.book : nil
         switch sheet {
         case .newRefuel:
             RefuelForm(model: RefuelFormModel(past: store.refuels), book: book, onSaved: saved)
@@ -296,11 +358,11 @@ struct LogListView: View {
         case .newOther:
             MaintenanceForm(model: MaintenanceFormModel(), book: book, onSaved: saved)
         case .edit(.refuel(let r)):
-            RefuelForm(model: RefuelFormModel(editing: r, past: store.refuels), book: book, onSaved: saved)
+            RefuelForm(model: RefuelFormModel(editing: r, past: store.refuels), book: store.editingBook(for: .refuel(r), in: book), onSaved: saved)
         case .edit(.service(let s)):
-            ServiceForm(model: ServiceFormModel(editing: s, resetChoices: []), book: book, onSaved: savedService)
+            ServiceForm(model: ServiceFormModel(editing: s, resetChoices: []), book: store.editingBook(for: .service(s), in: book), onSaved: savedService)
         case .edit(.maintenance(let m)):
-            MaintenanceForm(model: MaintenanceFormModel(editing: m), book: book, onSaved: saved)
+            MaintenanceForm(model: MaintenanceFormModel(editing: m), book: store.editingBook(for: .maintenance(m), in: book), onSaved: saved)
         }
     }
 }

@@ -37,14 +37,10 @@ struct RootView: View {
     @State private var hasCredentials = Credentials.load() != nil || DebugHarness.active
 
     var body: some View {
-        if folder.book == nil || !hasCredentials {
+        if folder.book == nil {
             SetupView(hasCredentials: $hasCredentials)
         } else {
-            TabView {
-                DashboardView().tabItem { Label("Dashboard", systemImage: "gauge") }
-                LogListView().tabItem { Label("Log", systemImage: "fuelpump") }
-                SettingsView().tabItem { Label("Settings", systemImage: "gear") }
-            }
+            NativeWorkspace()
         }
     }
 }

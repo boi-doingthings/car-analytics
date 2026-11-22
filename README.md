@@ -1,5 +1,7 @@
 # Car Analytics
 
+The v2 native foundation adds Today, Trips, Garage and Lab. See [what is implemented and what remains](docs/V2_IMPLEMENTATION.md).
+
 An iPhone vehicle logbook and analytics application with a read-only desktop dashboard. It archives read-only Hyundai Bluelink India responses, records refuels/services/expenses, and computes trip, fuel, commute and maintenance insights locally.
 
 This is a sanitized baseline of the existing application, with a proposal for the next generation. No personal archive, real invoices, account credentials, provider authorization constants or historical private Git commits are included. Historical analysis tests that require private inputs are explicitly skipped when those inputs are absent.
@@ -72,4 +74,4 @@ The analytics modules are shared between Node and iOS JavaScriptCore. ECharts an
 
 Run `python3 tools/check_publication.py` before committing. CI also scans for common personal-path, private-input and credential patterns. This complements manual review and a dedicated secret scanner; it does not prove anonymity. Never commit actual routes, vehicle identifiers, receipts, login material, signing files, local machine paths or personal commit metadata. Test fixtures are invented and documented as synthetic.
 
-No application license is granted by this baseline. Preserve upstream notices for vendored dependencies; review licensing and notices before broader redistribution.
+The application is available under the MIT license in `LICENSE`. Preserve upstream notices and applicable licenses for vendored dependencies.

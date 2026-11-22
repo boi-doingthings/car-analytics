@@ -1,5 +1,8 @@
 name: Baseline checks
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -43,3 +46,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift test --package-path ios/I20Core
+
+  ios-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: analytics/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: analytics
+      - run: brew install xcodegen
+      - run: xcodegen generate
+        working-directory: ios
+      - name: Select an available iPhone simulator
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
+          phone = next(device for runtime, group in devices.items() if 'iOS' in runtime for device in group if device['name'].startswith('iPhone'))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('TEST_DESTINATION=platform=iOS Simulator,id=' + phone['udid'] + '\n')
+          PYTHON
+      - name: Native app unit and navigation tests
+        run: xcodebuild -project ios/I20Logbook.xcodeproj -scheme I20Logbook -destination "$TEST_DESTINATION" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
