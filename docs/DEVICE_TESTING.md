@@ -4,7 +4,18 @@ The development branch is `codex/v2-native-foundation`. The stable baseline rema
 
 ## Open in Xcode
 
-From the repository root:
+Use the root of the **sanitized `car-analytics` checkout**, which is a separate Git repository from the original private project.
+
+If your terminal is currently in the original `bluelink` directory, enter the nested checkout first:
+
+```sh
+cd public/car-analytics
+git status --short --branch
+```
+
+Entering `public` alone is insufficient: it is still inside the original repository. The branch should be `codex/v2-native-foundation` once inside `public/car-analytics`. If you cloned `car-analytics` separately, enter that clone instead.
+
+Then run:
 
 ```sh
 git switch codex/v2-native-foundation
