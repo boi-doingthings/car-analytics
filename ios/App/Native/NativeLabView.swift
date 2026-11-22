@@ -14,15 +14,15 @@ struct NativeLabView: View {
                     NativeCard(title: "Engineering tools", symbol: "slider.horizontal.3") {
                         NavigationLink { NativeFuelScenarioView(model: snapshot?.fuel?.model) } label: {
                             tool("Fuel scenario", detail: "Explore distance, journey mix and idling", symbol: "function")
-                        }.accessibilityIdentifier("openFuelScenario")
+                        }.buttonStyle(.plain).accessibilityIdentifier("openFuelScenario")
                         Divider()
                         NavigationLink { NativeDataQualityView(snapshot: snapshot) } label: {
                             tool("Data quality", detail: "Coverage, freshness and model support", symbol: "checkmark.shield")
-                        }.accessibilityIdentifier("openDataQuality")
+                        }.buttonStyle(.plain).accessibilityIdentifier("openDataQuality")
                         Divider()
                         NavigationLink { DashboardView().navigationTitle("Detailed analysis").navigationBarTitleDisplayMode(.inline) } label: {
                             tool("Detailed analysis", detail: "Open the existing interactive dashboard", symbol: "chart.xyaxis.line")
-                        }.accessibilityIdentifier("openDetailedAnalysis")
+                        }.buttonStyle(.plain).accessibilityIdentifier("openDetailedAnalysis")
                     }
                     NativeCard(title: "Compare like with like", symbol: "arrow.left.arrow.right") {
                         Text("Open a trip to see how its duration compares with earlier journeys in the same direction, at a similar time and distance.")
