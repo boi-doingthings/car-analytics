@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>i20 Map</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Saira:wdth,wght@75..125,300..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="map.css">
+</head>
+<body class="map-page">
+  <header class="bar">
+    <a class="brand" href="index.html">i20 Logbook</a>
+    <nav aria-label="Pages">
+      <a href="index.html">Overview</a>
+      <a href="map.html" aria-current="page">Map</a>
+      <a href="performance.html">Performance</a>
+      <a href="fuel.html">Fuel</a>
+    </nav>
+    <div class="sync">
+      <span id="sync-label" class="sync-label">Loading…</span>
+      <button id="sync-btn" type="button">Sync now</button>
+    </div>
+  </header>
+
+  <main class="explore">
+    <div id="map" class="explore-map" aria-label="Map of every recorded route"></div>
+
+    <aside class="panel" id="panel" aria-label="Map controls">
+      <button class="panel-toggle" id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-body">Controls</button>
+      <div id="panel-body" class="panel-body">
+        <h1 id="m-title">Where you've driven</h1>
+        <p class="m-sub" id="m-sub"></p>
+
+        <fieldset class="field">
+          <legend>Colour routes by</legend>
+          <div class="seg" role="radiogroup">
+            <button type="button" role="radio" data-mode="trails" aria-checked="true">Light trails</button>
+            <button type="button" role="radio" data-mode="speed" aria-checked="false">Speed</button>
+            <button type="button" role="radio" data-mode="time" aria-checked="false">Time of day</button>
+          </div>
+          <div class="legend" id="legend"></div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend>Dates</legend>
+          <div class="range" id="range">
+            <input type="range" id="r-from" min="0" value="0" aria-label="From date">
+            <input type="range" id="r-to" min="0" aria-label="To date">
+          </div>
+          <div class="range-labels"><span id="l-from"></span><span id="l-to"></span></div>
+        </fieldset>
+
+        <fieldset class="field toggles">
+          <legend>Show</legend>
+          <label><input type="checkbox" id="t-places" checked> Home, work and frequent places</label>
+          <label><input type="checkbox" id="t-hot"> Congestion hotspots</label>
+          <label><input type="checkbox" id="t-park" checked> Where the car is parked now</label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="button" id="replay" class="primary">Play time-lapse</button>
+          <button type="button" id="fit">Fit to routes</button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="lapse" id="lapse" hidden aria-live="polite"></div>
+  </main>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="common.js"></script>
+  <script src="map.js"></script>
+</body>
+</html>

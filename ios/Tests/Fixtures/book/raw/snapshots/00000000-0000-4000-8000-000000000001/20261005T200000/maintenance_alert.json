@@ -1,0 +1,1 @@
+{"retCode": "S", "resCode": "0000", "resMsg": {"odometer": 1400, "mainList": [{"itemId": "Engine oil", "enable": true, "items": {"distValue": 10000, "termValue": 12}}, {"itemId": "Air Cleaner", "enable": true, "items": {"distValue": 30000, "termValue": 36}}]}, "msgId": "00000000-0000-0000-0000-000000000000"}

@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "id": "3d4c0abc-7f63-45ed-ad86-c72a7d864db8",
+  "entered_at": "2026-10-26T08:55:36+05:30",
+  "date": "2026-10-03",
+  "time": null,
+  "litres": 5.0,
+  "amount": 500.0,
+  "rate": 100.0,
+  "odometer_km": null,
+  "full_tank": null,
+  "missed": false,
+  "station": "Test Pump",
+  "company": "HP",
+  "lat": null,
+  "lon": null,
+  "note": null
+}

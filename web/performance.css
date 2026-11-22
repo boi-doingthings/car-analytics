@@ -1,0 +1,8 @@
+/* Performance page */
+.chart.corr { height: 520px; max-width: 760px; }
+.chart.sm { height: 220px; }
+.multiples { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 40px; }
+@media (max-width: 900px) { .multiples { grid-template-columns: 1fr; } }
+.stats.single { grid-template-columns: 1fr; margin-top: 28px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--fog); font-size: 13px; margin: 4px 0 0; }
+#t-clusters td:first-child, #t-outliers td:first-child { white-space: nowrap; }

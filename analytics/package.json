@@ -1,0 +1,12 @@
+{
+  "name": "i20-analytics",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>i20 Logbook</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Saira:wdth,wght@75..125,300..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="index.html">i20 Logbook</a>
+    <nav aria-label="Pages">
+      <a href="index.html" aria-current="page">Overview</a>
+      <a href="map.html">Map</a>
+      <a href="performance.html">Performance</a>
+      <a href="fuel.html">Fuel</a>
+    </nav>
+    <div class="sync">
+      <span id="sync-label" class="sync-label">Loading…</span>
+      <button id="sync-btn" type="button">Sync now</button>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-label="Every route on record">
+      <div id="hero-map" class="hero-map"></div>
+      <div class="hero-shade"></div>
+      <div class="hero-copy">
+        <p class="odo" id="odo" aria-live="polite"></p>
+        <p class="hero-line" id="hero-line"></p>
+        <p class="hero-sub" id="hero-sub"></p>
+      </div>
+      <aside class="cluster" id="cluster" aria-label="Car right now"></aside>
+    </section>
+
+    <section id="year" class="sec">
+      <h2 id="f-year"></h2>
+      <p class="lede">Each square is a day; brighter means more kilometres. Click a day to see its trips.</p>
+      <div class="scroll-x"><div id="c-calendar" class="chart cal"></div></div>
+      <div class="split">
+        <div>
+          <h3>Kilometres by month</h3>
+          <div id="c-months" class="chart"></div>
+        </div>
+        <div id="day-panel" class="day-panel" aria-live="polite">
+          <h3>Pick a day</h3>
+          <p class="muted">Click any square in the calendar above.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="rhythm" class="sec">
+      <h2 id="f-rhythm"></h2>
+      <p class="lede">When your trips start, by day of week and hour.</p>
+      <div class="split wide-left">
+        <div id="c-rhythm" class="chart tall"></div>
+        <div>
+          <h3>Average kilometres per weekday</h3>
+          <div id="c-weekday" class="chart tall"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="commute" class="sec">
+      <h2 id="f-commute"></h2>
+      <p class="lede" id="f-commute-2"></p>
+      <div class="split wide-left">
+        <div id="c-commute" class="chart tall"></div>
+        <div class="figures" id="commute-figs"></div>
+      </div>
+    </section>
+
+    <section id="traffic" class="sec">
+      <h2 id="f-traffic"></h2>
+      <p class="lede" id="f-hotspots"></p>
+      <div class="split wide-left">
+        <div id="traffic-map" class="map"></div>
+        <ol id="hotspot-list" class="hotspots"></ol>
+      </div>
+      <h3>Share of trip time spent standing still, by start hour</h3>
+      <div id="c-idle" class="chart"></div>
+    </section>
+
+    <section id="trips" class="sec">
+      <h2>Every trip, replayed</h2>
+      <p class="lede" id="trips-lede"></p>
+      <div class="explorer">
+        <div class="trip-side">
+          <div class="seg" role="group" aria-label="Filter trips">
+            <button type="button" data-filter="route" aria-pressed="true">With route</button>
+            <button type="button" data-filter="all" aria-pressed="false">All trips</button>
+          </div>
+          <ul id="trip-list" class="trip-list"></ul>
+        </div>
+        <div class="trip-main">
+          <div id="trip-stats" class="trip-stats"></div>
+          <div id="trip-map" class="map"></div>
+          <div id="c-speed" class="chart short"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="style" class="sec">
+      <h2 id="f-style"></h2>
+      <div class="events" id="events"></div>
+      <div class="split">
+        <div>
+          <h3>Top speed reached per trip</h3>
+          <div id="c-topspeed" class="chart"></div>
+        </div>
+        <div>
+          <h3>How long your trips are</h3>
+          <div id="c-lengths" class="chart"></div>
+          <p class="note" id="f-short"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="car" class="sec">
+      <h2 id="f-service"></h2>
+      <p class="lede" id="f-service-2"></p>
+      <div id="service" class="service"></div>
+      <div id="reminders" class="svc-rows reminders" hidden></div>
+      <div class="split">
+        <div>
+          <div id="visits"></div>
+          <div id="running-cost" hidden>
+            <h3>Running cost per km</h3>
+            <div id="c-cost" class="chart short"></div>
+            <p class="note" id="f-cost"></p>
+          </div>
+        </div>
+        <div class="coverage" id="coverage"></div>
+      </div>
+      <h3>Fuel in the tank, modelled between gauge readings</h3>
+      <div id="c-fuel" class="chart tall"></div>
+      <p class="note wide" id="f-tank"></p>
+    </section>
+  </main>
+
+  <footer class="foot" id="foot"></footer>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/leaflet-heat.js"></script>
+  <script src="common.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

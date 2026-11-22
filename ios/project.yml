@@ -1,0 +1,85 @@
+name: I20Logbook
+options:
+  bundleIdPrefix: com.i20logbook
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  I20Core:
+    path: I20Core
+targets:
+  I20Logbook:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: App
+        excludes:
+          - Resources/analytics.js
+      - path: ../web
+        type: folder
+        buildPhase: resources
+      - path: App/Resources/analytics.js
+        buildPhase: resources
+    dependencies:
+      - package: I20Core
+    postBuildScripts:
+      # The Mac dashboard's personal outputs (gitignored) must never ship in the app; the app serves
+      # data/fuel/performance.json only from Application Support/derived.
+      - name: Drop personal data files from bundled web
+        basedOnDependencyAnalysis: false
+        script: |
+          rm -f "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/web/"{data,fuel,performance}.json
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.i20logbook.app
+        # Set DEVELOPMENT_TEAM locally in Xcode; never commit signing identities.
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: I20 Logbook
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Saves where you refuelled so the pump is suggested next time."
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  I20LogbookTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Tests
+        excludes:
+          - Fixtures/**
+      - path: Tests/Fixtures/book
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: I20Logbook
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+  I20LogbookUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: I20Logbook
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TEST_TARGET_NAME: I20Logbook
+schemes:
+  I20Logbook:
+    build:
+      targets:
+        I20Logbook: all
+    test:
+      targets: [I20LogbookTests, I20LogbookUITests]

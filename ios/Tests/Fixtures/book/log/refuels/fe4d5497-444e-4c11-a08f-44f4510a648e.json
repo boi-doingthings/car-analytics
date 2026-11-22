@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "id": "fe4d5497-444e-4c11-a08f-44f4510a648e",
+  "entered_at": "2026-10-26T08:55:36+05:30",
+  "date": "2026-10-05",
+  "time": null,
+  "litres": 30.0,
+  "amount": 3000.0,
+  "rate": 100.0,
+  "odometer_km": null,
+  "full_tank": null,
+  "missed": false,
+  "station": "Other Pump",
+  "company": "IOCL",
+  "lat": null,
+  "lon": null,
+  "note": null
+}

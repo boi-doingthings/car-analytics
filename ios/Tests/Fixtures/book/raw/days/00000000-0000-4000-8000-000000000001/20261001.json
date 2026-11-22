@@ -1,0 +1,1 @@
+{"retCode": "S", "resCode": "0000", "resMsg": {"tripPeriodType": 1, "dayTripList": [{"tripDay": "20261001", "dayTripCnt": 1, "tripDrvTime": 140, "tripIdleTime": 6, "tripDist": 140, "tripAvgSpeed": 60, "tripMaxSpeed": 95}]}, "msgId": "00000000-0000-0000-0000-000000000000"}
