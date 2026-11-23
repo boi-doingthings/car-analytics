@@ -93,9 +93,9 @@
     return r.json();
   }
   function fail(msg) {
-    if (inApp) msg = "The dashboard appears after the first sync. It starts by itself; tap <b>Sync now</b> to retry.";
+    if (inApp) msg = "The dashboard appears after your archive is analysed. Return to the app to rebuild it, or use the refresh button here.";
     $("main").innerHTML = `<section class="sec"><h2>No data yet</h2><p class="lede">${msg}</p></section>`;
-    if (inApp) initSync(); // the app's first run: sync, then reload when it finishes
+    if (inApp) initSync(); // Observe a native run if one is active; the page never auto-starts one.
   }
   // The footer names where the data is stored.
   function storedWhere() {
@@ -119,35 +119,129 @@
     if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
     return `${Math.round(m / 1440)} days ago`;
   }
-  async function initSync(generatedAt) {
+  // A failed data fetch and a page initializer can both call initSync. Share one controller
+  // per button so they cannot attach multiple click handlers or create parallel polling loops.
+  const syncControls = new WeakMap();
+  function initSync(generatedAt) {
     const label = $("#sync-label"), btn = $("#sync-btn");
-    if (!label || !btn) return;
-    storedWhere();
-    // serve.py step (Mac; the old collect/build/insights labels are kept for reference) and SyncCoordinator steps (iPhone app).
-    const STEP = { starting: "Starting…", "analytics/cli.mjs": "Reading iCloud…", "collect.py": "Fetching from Hyundai…", "build_db.py": "Updating archive…", "insights.py": "Recalculating…",
-      login: "Logging in to Bluelink…", collect: "Fetching from Hyundai…", analyse: "Recalculating…" };
-    let state;
-    try { state = await (await fetch("/api/sync")).json(); }
-    catch { btn.hidden = true; label.textContent = generatedAt ? `Data from ${ago(generatedAt)}` : ""; return; }
-    const show = (s) => {
-      label.classList.toggle("err", !!s.error);
-      btn.disabled = s.running;
-      // `issues`: problems that didn't stop the sync (the app's Settings lists them).
-      const issues = s.issues ? ` · ${s.issues} issue${s.issues === 1 ? "" : "s"}` : "";
-      const when = s.last_sync || generatedAt;
-      label.textContent = s.running ? STEP[s.step] || "Syncing…" : s.error ? s.error : (when ? `Synced ${ago(when)}` : "Not synced yet") + issues;
-    };
-    const poll = async () => {
-      const s = await (await fetch("/api/sync")).json();
-      show(s);
-      if (s.running) return setTimeout(poll, 1500);
-      if (!s.error) location.reload();
-    };
-    const start = async () => { show(await (await fetch("/api/sync", { method: "POST" })).json()); setTimeout(poll, 1500); };
-    btn.addEventListener("click", start);
-    show(state);
-    if (state.running) setTimeout(poll, 1500);
-    else if (!state.error && (!state.last_sync || Date.now() - day(state.last_sync) > 12 * 3600e3)) start();
+    if (!label || !btn) return Promise.resolve();
+    if (syncControls.has(btn)) return syncControls.get(btn);
+    const setup = (async () => {
+      storedWhere();
+      // serve.py steps (Mac) and SyncCoordinator steps (iPhone app).
+      const STEP = { starting: "Starting…", "analytics/cli.mjs": "Reading iCloud…", "collect.py": "Fetching from Hyundai…", "build_db.py": "Updating archive…", "insights.py": "Recalculating…",
+        check: "Checking archive…", login: "Logging in to Bluelink…", collect: "Fetching from Hyundai…", analyse: "Recalculating…" };
+      let active = false, timer = null, reloaded = false;
+      let readOnly = false, initializing = true;
+      let generationKnown = false, observedGeneration = null;
+      const hasGeneration = (state) => Object.prototype.hasOwnProperty.call(state, "analysis_generation");
+      const observeGeneration = (state) => {
+        if (!generationKnown && hasGeneration(state)) {
+          generationKnown = true;
+          observedGeneration = state.analysis_generation;
+        }
+      };
+      btn.disabled = true;
+      const request = async (method = "GET") => {
+        const response = await fetch("/api/sync", { method, cache: "no-store" });
+        if (!response.ok) throw new Error("Sync status unavailable");
+        const state = await response.json();
+        if (!state || typeof state.running !== "boolean") throw new Error("Invalid sync status");
+        return state;
+      };
+      const clearPoll = () => {
+        if (timer !== null) { clearTimeout(timer); timer = null; }
+      };
+      const show = (state) => {
+        if (inApp) readOnly = state.read_only === true;
+        btn.textContent = readOnly ? "Rebuild" : "Sync now";
+        label.classList.toggle("err", !!state.error);
+        btn.disabled = active || state.running || reloaded;
+        const count = Number.isFinite(state.issues) ? state.issues : 0;
+        const issues = count ? ` · ${count} issue${count === 1 ? "" : "s"}` : "";
+        if (state.running) label.textContent = STEP[state.step] || "Syncing…";
+        else if (state.error) label.textContent = state.error;
+        else if (inApp) {
+          const analysis = state.last_analysis || generatedAt;
+          const parts = [analysis ? `Analysis ${ago(analysis)}` : "No analysis yet"];
+          parts.push(state.last_sync ? `Collected ${ago(state.last_sync)}` : "No collection timestamp");
+          label.textContent = parts.join(" · ") + issues;
+        } else {
+          const when = state.last_sync || generatedAt;
+          label.textContent = (when ? `Synced ${ago(when)}` : "Not synced yet") + issues;
+        }
+      };
+      const failed = () => {
+        active = false;
+        clearPoll();
+        btn.disabled = false;
+        label.classList.toggle("err", true);
+        label.textContent = `Couldn’t read sync status. Tap ${readOnly ? "Rebuild" : "Sync now"} to retry.`;
+      };
+      const finished = (state) => {
+        active = false;
+        clearPoll();
+        show(state);
+        // A native metadata-only check may finish without publishing any data. Equal known
+        // generations (including null → null) need no reload. Older bridges omit this field,
+        // so retain their successful-run reload fallback rather than comparing timestamps.
+        const unchangedGeneration = inApp && generationKnown && hasGeneration(state)
+          && state.analysis_generation === observedGeneration;
+        if (!state.error && !reloaded && !unchangedGeneration) {
+          reloaded = true;
+          btn.disabled = true;
+          location.reload();
+        }
+      };
+      const schedule = () => {
+        if (active && !reloaded && timer === null) timer = setTimeout(async () => {
+          timer = null;
+          await poll();
+        }, 1500);
+      };
+      const poll = async () => {
+        if (!active || reloaded) return;
+        try {
+          const state = await request();
+          show(state);
+          if (state.running) { observeGeneration(state); schedule(); }
+          else finished(state);
+        } catch { failed(); }
+      };
+      const start = async () => {
+        if (initializing || active || reloaded) return;
+        active = true;
+        btn.disabled = true;
+        clearPoll();
+        try {
+          const state = await request("POST");
+          show(state);
+          if (state.running) { observeGeneration(state); schedule(); }
+          else finished(state);
+        } catch { failed(); }
+      };
+      btn.addEventListener("click", start);
+      try {
+        const state = await request();
+        initializing = false;
+        observeGeneration(state);
+        show(state);
+        if (state.running) { active = true; btn.disabled = true; schedule(); }
+        // The native layer owns automatic collection/analysis. A read-only rebuild does not
+        // update last_sync, so treating it as a page-load trigger would reload forever.
+        else if (!inApp && !state.error && (!state.last_sync || Date.now() - day(state.last_sync) > 12 * 3600e3)) await start();
+      } catch {
+        initializing = false;
+        if (inApp) failed();
+        else {
+          // A saved/static Mac dashboard may have no API; retain its existing read-only fallback.
+          btn.hidden = true;
+          label.textContent = generatedAt ? `Data from ${ago(generatedAt)}` : "";
+        }
+      }
+    })();
+    syncControls.set(btn, setup);
+    return setup;
   }
 
   window.LB = {

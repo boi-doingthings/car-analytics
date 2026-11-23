@@ -18,8 +18,6 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
     private let sync: SyncCoordinator
     /// A page and all of its data requests see one revision, even while a sync publishes another.
     private var pinnedDerivedDir: URL?
-    /// When the page last polled `/api/sync`; a page that polls reloads itself when a run finishes.
-    private(set) var lastPoll: Date?
 
     init(sync: SyncCoordinator, webRoot: URL? = Bundle.main.url(forResource: "web", withExtension: nil)) {
         self.sync = sync
@@ -29,8 +27,13 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url, let path = Self.requestPath(url) else { return fail(task, 404) }
         if path == "api/sync" {
-            lastPoll = Date()
-            if task.request.httpMethod == "POST" { sync.syncNow() }
+            if task.request.httpMethod == "POST" {
+                if !sync.archiveAllowsChanges || (Credentials.load() == nil && !DebugHarness.active) {
+                    sync.rebuild()
+                } else {
+                    sync.syncNow()
+                }
+            }
             return respond(task, url: url, status: 200, type: "application/json", body: statusJSON())
         }
         if path.hasSuffix(".html") || path.isEmpty { pinnedDerivedDir = sync.derivedDir }
@@ -81,6 +84,8 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
             "last_sync": s.lastSync.map { istTimestamp($0) } ?? NSNull(),
             "issues": s.issues.count,
             "last_analysis": s.lastAnalysis.map { istTimestamp($0) } ?? NSNull(),
+            "read_only": !sync.archiveAllowsChanges,
+            "analysis_generation": sync.hasCurrentArchiveSnapshot ? sync.derivedDir.lastPathComponent : NSNull(),
         ]
         return (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
     }

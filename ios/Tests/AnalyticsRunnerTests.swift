@@ -101,6 +101,8 @@ final class AnalyticsRunnerTests: XCTestCase {
 
         XCTAssertNil(out.fuel)
         XCTAssertFalse(FileManager.default.fileExists(atPath: runner.derivedDir.appending(path: "fuel.json").path))
+        let cachedWithoutFuel = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertFalse(cachedWithoutFuel)
     }
 
     func test_placeholderKeepsLastOutputsAndReportsDownloading() async throws {
@@ -264,6 +266,173 @@ final class AnalyticsRunnerTests: XCTestCase {
             XCTAssertEqual(FileManager.default.fileExists(atPath: directory.path), index >= 3)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+    }
+
+    func test_passiveAnalysisReusesMetadataDayAndScriptMatchedGeneration() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let runner = AnalyticsRunner(derivedDir: root)
+        let first = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(first)
+        let directory = runner.derivedDir
+        let published = runner.publishedAt
+        for _ in 0..<4 {
+            let changed = try await runner.runIfNeeded(book: book, today: "2026-10-26", onRebuild: {
+                XCTFail("An unchanged cache must not report a recalculation")
+            })
+            XCTAssertFalse(changed)
+        }
+        XCTAssertEqual(runner.derivedDir, directory)
+        XCTAssertEqual(runner.publishedAt, published)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "generations").path).count, 1)
+        try book.writeAtomic("log/services/synthetic-photo.jpg", Data("not an analytical input".utf8))
+        let photoOnly = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertFalse(photoOnly)
+    }
+
+    func test_passiveAnalysisInvalidatesForSourceAddEditAndDelete() async throws {
+        let book = try fixtureBook()
+        let runner = AnalyticsRunner(derivedDir: tmp.appending(path: "derived"))
+        _ = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        let entry = Maintenance(date: "2026-10-01", category: .wash, cost: 200)
+        try save(entry, in: book)
+        let added = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(added)
+        let path = "log/maintenance/\(entry.id).json"
+        var updated = try book.read(path)
+        updated.append(Data(" ".utf8))
+        try book.writeAtomic(path, updated)
+        let edited = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(edited)
+        // A same-size touch still invalidates through modification metadata.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)],
+                                             ofItemAtPath: book.url(path).path)
+        let touched = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(touched)
+        try book.delete(path)
+        let deleted = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(deleted)
+        let unchanged = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertFalse(unchanged)
+    }
+
+    func test_passiveAnalysisInvalidatesForCalendarDayScriptAndMissingOutputs() async throws {
+        let book = try fixtureBook()
+        let script = tmp.appending(path: "analytics-copy.js")
+        let source = try XCTUnwrap(Bundle.main.url(forResource: "analytics", withExtension: "js"))
+        try FileManager.default.copyItem(at: source, to: script)
+        let runner = AnalyticsRunner(derivedDir: tmp.appending(path: "derived"), script: script)
+        _ = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        let nextDay = try await runner.runIfNeeded(book: book, today: "2026-10-27")
+        XCTAssertTrue(nextDay)
+        var code = try Data(contentsOf: script)
+        code.append(Data("\n// synthetic script revision\n".utf8))
+        try code.write(to: script)
+        let newScript = try await runner.runIfNeeded(book: book, today: "2026-10-27")
+        XCTAssertTrue(newScript)
+        for name in ["data.json", "fuel.json", "performance.json"] {
+            try FileManager.default.removeItem(at: runner.derivedDir.appending(path: name))
+            let missingOutput = try await runner.runIfNeeded(book: book, today: "2026-10-27")
+            XCTAssertTrue(missingOutput, "\(name) must exist before the cache can be reused")
+        }
+    }
+
+    func test_legacyGenerationWithoutInputStampIsCertifiedOnlyAfterRebuild() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let runner = AnalyticsRunner(derivedDir: root)
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        let manifestURL = root.appending(path: "current.json")
+        var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        manifest.removeValue(forKey: "inputs")
+        manifest.removeValue(forKey: "files")
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        let upgraded = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(upgraded)
+        let again = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertFalse(again)
+    }
+
+    func test_sourceChangedDuringAnalysisCannotCertifyNewerInputs() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let runner = AnalyticsRunner(derivedDir: root)
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        let previous = runner.derivedDir
+        let oldManifest = try Data(contentsOf: root.appending(path: "current.json"))
+        let path = try XCTUnwrap(try book.allFiles(under: "raw").first { $0.hasSuffix(".json") && !$0.hasSuffix(".meta.json") })
+        let changing = AnalyticsRunner(derivedDir: root, beforePublication: {
+            var bytes = try book.read(path)
+            bytes.append(Data(" ".utf8))
+            try book.writeAtomic(path, bytes)
+        })
+        do {
+            _ = try await changing.run(book: book, today: "2026-10-26")
+            XCTFail("expected concurrent-source rejection")
+        } catch { XCTAssertEqual(error as? AnalyticsError, .sourceChanged) }
+        XCTAssertEqual(changing.derivedDir, previous)
+        XCTAssertEqual(try Data(contentsOf: root.appending(path: "current.json")), oldManifest)
+        let caughtUp = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(caughtUp, "the rejected run must not falsely stamp the newer archive as analysed")
+    }
+
+    func test_placeholderArrivalInvalidatesWithoutReplacingPreviousCache() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let runner = AnalyticsRunner(derivedDir: root)
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        let previous = runner.derivedDir
+        let placeholder = book.root.appending(path: "raw/.pending.json.icloud")
+        try Data().write(to: placeholder)
+        runner.downloadTimeout = 0.01
+        do {
+            _ = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+            XCTFail("new placeholder must invalidate the cached signature")
+        } catch { XCTAssertEqual(error as? AnalyticsError, .stillDownloading(1)) }
+        XCTAssertEqual(runner.derivedDir, previous)
+    }
+
+    func test_scriptChangedDuringAnalysisCannotPublishAnOutdatedCertification() async throws {
+        let book = try fixtureBook()
+        let root = tmp.appending(path: "derived")
+        let script = tmp.appending(path: "script-changing.js")
+        let original = try XCTUnwrap(Bundle.main.url(forResource: "analytics", withExtension: "js"))
+        try FileManager.default.copyItem(at: original, to: script)
+        let runner = AnalyticsRunner(derivedDir: root, script: script)
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        let previous = runner.derivedDir
+        let changing = AnalyticsRunner(derivedDir: root, script: script, beforePublication: {
+            var bytes = try Data(contentsOf: script)
+            bytes.append(Data("\n// changed during evaluation\n".utf8))
+            try bytes.write(to: script)
+        })
+        do {
+            _ = try await changing.run(book: book, today: "2026-10-26")
+            XCTFail("expected changed script rejection")
+        } catch { XCTAssertEqual(error as? AnalyticsError, .sourceChanged) }
+        XCTAssertEqual(changing.derivedDir, previous)
+        let caughtUp = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertTrue(caughtUp)
+    }
+
+    func test_materializedFileWithShadowPlaceholderSettlesToCachedAnalysis() async throws {
+        let book = try fixtureBook()
+        let runner = AnalyticsRunner(derivedDir: tmp.appending(path: "derived"))
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        let path = try XCTUnwrap(try book.allFiles(under: "log/refuels").first { $0.hasSuffix(".json") })
+        let real = book.url(path)
+        let placeholder = real.deletingLastPathComponent().appending(path: "." + real.lastPathComponent + ".icloud")
+        let before = try book.read(path)
+        try Data().write(to: placeholder)
+        let changed = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+        XCTAssertFalse(changed, "a shadow marker is irrelevant while the actual input is materialized")
+        _ = try await runner.run(book: book, today: "2026-10-26")
+        for _ in 0..<3 {
+            let again = try await runner.runIfNeeded(book: book, today: "2026-10-26")
+            XCTAssertFalse(again)
+        }
+        XCTAssertEqual(try book.read(path), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: placeholder.path), "analysis never edits archive metadata")
     }
 
 }

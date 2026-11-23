@@ -332,4 +332,74 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(try archiveContents(book), before)
     }
 
+    func test_repeatedPassiveRefreshDoesNotPublishOrCallProviderAgain() async throws {
+        let fixture = try fixtureBook()
+        let book = Book(root: fixture.root, writeAuthorization: BookWriteAuthorization(allowed: false))
+        let before = try archiveContents(book)
+        var logins = 0
+        let sync = coordinator(book: book) { _, _ in logins += 1; return EmptyAPI() }
+        sync.syncIfStale()
+        await sync.task?.value
+        let directory = sync.derivedDir
+        XCTAssertEqual(sync.finishedRuns, 1)
+        for _ in 0..<5 {
+            sync.syncIfStale()
+            sync.rebuildIfNeeded()
+            await sync.task?.value
+        }
+        XCTAssertEqual(sync.finishedRuns, 1)
+        XCTAssertEqual(sync.derivedDir, directory)
+        XCTAssertEqual(logins, 0)
+        XCTAssertEqual(try archiveContents(book), before)
+        // Explicit pull-to-refresh remains forced even when the passive cache is current.
+        sync.syncNow()
+        await sync.task?.value
+        XCTAssertEqual(sync.finishedRuns, 2)
+        XCTAssertNotEqual(sync.derivedDir, directory)
+    }
+
+    func test_autoOffAndMissingCredentialsUseSamePassiveFreshnessGate() async throws {
+        let book = try fixtureBook()
+        var logins = 0
+        let sync = SyncCoordinator(book: { book }, credentials: { nil },
+            login: { _, _ in logins += 1; return EmptyAPI() },
+            runner: AnalyticsRunner(derivedDir: tmp.appending(path: "derived")),
+            collectorPause: .zero, automaticCollection: { true })
+        sync.syncIfStale()
+        await sync.task?.value
+        sync.syncIfStale()
+        await sync.task?.value
+        XCTAssertEqual(logins, 0)
+        XCTAssertEqual(sync.finishedRuns, 1)
+        XCTAssertNil(sync.state.error)
+    }
+
+    func test_passiveEventsDuringForcedSyncDoNotQueueAnotherGeneration() async throws {
+        let book = try fixtureBook()
+        var releaseLogin: (() -> Void)?
+        let sync = coordinator(book: book) { _, _ in
+            await withCheckedContinuation { continuation in releaseLogin = { continuation.resume() } }
+            return EmptyAPI()
+        }
+        sync.syncNow()
+        for _ in 0..<100 where releaseLogin == nil { await Task.yield() }
+        let release = try XCTUnwrap(releaseLogin)
+        for _ in 0..<5 { sync.rebuildIfNeeded(); sync.syncIfStale() }
+        release()
+        await sync.task?.value
+        XCTAssertEqual(sync.finishedRuns, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tmp.appending(path: "derived/generations").path).count, 1)
+    }
+
+    func test_forcedRebuildDuringPassiveCheckIsNotLost() async throws {
+        let book = try fixtureBook()
+        let sync = coordinator(book: book) { _, _ in EmptyAPI() }
+        sync.rebuildIfNeeded()
+        XCTAssertEqual(sync.state.step, "check")
+        sync.rebuild()  // Arrives while the passive task is queued; must retain forced semantics.
+        await sync.task?.value
+        XCTAssertNil(sync.state.error)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tmp.appending(path: "derived/generations").path).count, 2)
+    }
+
 }

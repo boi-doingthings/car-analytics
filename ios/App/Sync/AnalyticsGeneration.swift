@@ -4,11 +4,19 @@ import CryptoKit
 /// A complete cache revision. Only the small manifest is replaced when a new revision is ready.
 /// The portable archive is never modified by this store.
 struct AnalyticsGeneration {
+    struct Inputs: Codable, Equatable, Sendable {
+        let signature: String
+        let day: String
+        let scriptDigest: String
+    }
+
     struct Manifest: Codable {
         let schema: Int
         let generation: String
         let publishedAt: Date
         let archiveID: String?
+        let inputs: Inputs?
+        let files: [String]?
     }
 
     /// Local-only identity; the actual selected folder path is never embedded in derived artifacts.
@@ -36,7 +44,7 @@ struct AnalyticsGeneration {
 
     /// Files become visible together, after every write succeeds. Previously published generations
     /// remain readable by a screen that captured its directory before a new generation was published.
-    func publish(data: Data, fuel: Data?, performance: Data, archiveID: String? = nil, now: Date = Date()) throws {
+    func publish(data: Data, fuel: Data?, performance: Data, archiveID: String? = nil, inputs: Inputs? = nil, now: Date = Date()) throws {
         let fm = FileManager.default
         let id = UUID().uuidString.lowercased()
         let generations = root.appending(path: "generations", directoryHint: .isDirectory)
@@ -48,7 +56,8 @@ struct AnalyticsGeneration {
         try performance.write(to: destination.appending(path: "performance.json"), options: .atomic)
         if let fuel { try fuel.write(to: destination.appending(path: "fuel.json"), options: .atomic) }
         try Task.checkCancellation()
-        let manifest = Manifest(schema: 1, generation: id, publishedAt: now, archiveID: archiveID)
+        let manifest = Manifest(schema: 1, generation: id, publishedAt: now, archiveID: archiveID,
+                                inputs: inputs, files: ["data.json", "performance.json"] + (fuel == nil ? [] : ["fuel.json"]))
         try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
         committed = true
         prune(now: now)

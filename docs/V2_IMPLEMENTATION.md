@@ -49,3 +49,17 @@ Fuel diagnostics now report nested leave-one-out and chronological model/baselin
 ### Safety and validation checks
 
 The safety/validation increment passed 106 app unit tests and all four simulator UI tests, including explicit write consent, revocation, disabled automatic collection and byte-identical read-only archive rebuilding. Core storage/provider checks passed 60 tests with the opt-in live-login test skipped. JavaScript checks passed 44 public tests with 21 private-history skips. Backup/restore, migration and desktop checks passed 19 tests. A synthetic browser check also confirmed that unavailable validation errors render as unavailable instead of zero, with no page exceptions. No main archive or live vehicle account was used for these tests.
+
+## Read-only refresh loop correction
+
+The embedded detailed dashboard previously treated an old or absent collection timestamp as a reason to start another run on every page load. A read-only rebuild correctly leaves that timestamp unchanged, so the resulting page reload could start an endless rebuild cycle. Native lifecycle events also requested full rebuilds even when the archive was unchanged.
+
+Automatic refresh now belongs to the native coordinator. Passive visits check a cached input signature, the India calendar day, the analytical script and the expected output files before running analysis. Saved edits and explicit refreshes still force analysis. A completed metadata check neither publishes a new generation nor reloads the detailed page. Foreground events arriving during an active run do not queue another rebuild. A materialized cloud file takes precedence over a lingering placeholder marker.
+
+The first launch after this update rebuilds once to establish the new cache stamp. Thereafter, an unchanged archive should settle. The detailed page separates analytical publication from collection time and labels its read-only action “Rebuild”. Archive changes during analysis preserve the last complete generation and surface a retryable error instead of certifying stale results.
+
+Removing incidental rebuilds also exposed a first-presentation form bug: the sheet action and archive root could come from different SwiftUI state updates. Logbook sheets and deletion confirmations now capture their selection and archive together, retaining archive-switch and write-consent guards.
+
+Device acceptance: keep archive changes disabled, wait for the first analysis to finish, visit Today and Lab → Detailed analysis repeatedly, then background and reopen the app. No repeated recalculation should occur with unchanged inputs on the same day. An explicit refresh should complete once. A new day, changed analytical input, changed analytical script or missing output legitimately requires analysis. These checks avoid repeated full analysis; battery consumption has not been measured on a physical device.
+
+Validation: 120 app unit tests and all four simulator UI tests passed. Tests include the actual embedded WebKit page remaining idle until explicit refresh, one reload per publication, metadata-cache reuse/invalidation, concurrent source changes and iCloud shadow placeholders. JavaScript checks passed 59 public tests with 21 private-history skips, including 15 sync-controller regressions. Publication and Gitleaks scans passed. All automated runs used synthetic archives.

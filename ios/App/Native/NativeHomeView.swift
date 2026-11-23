@@ -100,6 +100,7 @@ struct NativeHomeView: View {
 
     private var syncLabel: String {
         switch sync.state.step {
+        case "check": return "Checking archive for changes…"
         case "login": return "Connecting to Bluelink…"
         case "collect": return "Archiving new drives…"
         default: return "Updating your briefing…"

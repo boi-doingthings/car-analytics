@@ -112,7 +112,7 @@ struct LastSyncSection: View {
         self.syncNow = syncNow
     }
 
-    static let stepLabels = ["login": "Logging in to Bluelink\u{2026}", "collect": "Fetching from Hyundai\u{2026}",
+    static let stepLabels = ["check": "Checking archive for changes…", "login": "Logging in to Bluelink\u{2026}", "collect": "Fetching from Hyundai\u{2026}",
                              "analyse": "Recalculating\u{2026}"]
 
     var body: some View {

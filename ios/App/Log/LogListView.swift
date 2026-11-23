@@ -226,10 +226,8 @@ struct LogListView: View {
     @EnvironmentObject var sync: SyncCoordinator
     @StateObject private var store = LogStore()
     @State private var filter: LogFilter = .all
-    @State private var sheet: LogSheet?
-    @State private var pendingDelete: LogItem?
-    @State private var presentationArchiveRoot: URL?
-    @State private var deletionArchiveRoot: URL?
+    @State private var sheet: LogPresentation?
+    @State private var pendingDelete: LogDeletion?
     @State private var showAccessSettings = false
 
     enum LogSheet: Identifiable {
@@ -244,6 +242,19 @@ struct LogListView: View {
             case .inspect(let i): "inspect-\(i.id)"
             }
         }
+    }
+
+    /// Keep the selection and its archive in the same presentation value. Separate @State fields
+    /// can be captured from different updates when SwiftUI opens a sheet for the first time.
+    private struct LogPresentation: Identifiable {
+        let id = UUID()
+        let action: LogSheet
+        let archiveRoot: URL
+    }
+
+    private struct LogDeletion {
+        let item: LogItem
+        let archiveRoot: URL
     }
 
     var body: some View {
@@ -274,8 +285,8 @@ struct LogListView: View {
                         .swipeActions {
                             if folder.writesAllowed {
                                 Button(role: .destructive) {
-                                    deletionArchiveRoot = folder.book?.root
-                                    pendingDelete = item
+                                    guard let root = folder.book?.root else { return }
+                                    pendingDelete = LogDeletion(item: item, archiveRoot: root)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -314,16 +325,13 @@ struct LogListView: View {
             .onChange(of: folder.book?.root) { _, _ in
                 sheet = nil
                 pendingDelete = nil
-                presentationArchiveRoot = nil
-                deletionArchiveRoot = nil
             }
             .onChange(of: folder.writesAllowed) { _, allowed in
                 if !allowed {
                     if let current = sheet {
-                        switch current { case .inspect: break; default: sheet = nil }
+                        switch current.action { case .inspect: break; default: sheet = nil }
                     }
                     pendingDelete = nil
-                    deletionArchiveRoot = nil
                 }
             }
             .sheet(item: $sheet) { form(for: $0) }
@@ -331,20 +339,20 @@ struct LogListView: View {
                 SettingsView().presentationDragIndicator(.visible)
             }
             .confirmationDialog("Delete this entry?", isPresented: deleteDialogShown, titleVisibility: .visible,
-                                presenting: pendingDelete) { item in
+                                presenting: pendingDelete) { deletion in
                 Button("Delete", role: .destructive) {
                     guard folder.writesAllowed else {
                         store.actionError = LogText.readOnly
                         return
                     }
-                    guard deletionArchiveRoot == folder.book?.root else {
+                    guard deletion.archiveRoot == folder.book?.root else {
                         store.actionError = LogText.archiveChanged
                         return
                     }
-                    if store.delete(item, in: folder.book) { Task { await LogStore.rebuildAfterSave(sync) } }
+                    if store.delete(deletion.item, in: folder.book) { Task { await LogStore.rebuildAfterSave(sync) } }
                 }
-            } message: { item in
-                if case .service = item {
+            } message: { deletion in
+                if case .service = deletion.item {
                     Text("The entry and its photos are removed from i20_book.")
                 } else {
                     Text("The entry is removed from i20_book.")
@@ -374,8 +382,8 @@ struct LogListView: View {
             store.actionError = LogText.archiveChanged
             return
         }
-        presentationArchiveRoot = folder.book?.root
-        sheet = value
+        guard let root = folder.book?.root else { store.actionError = LogText.loadFailed; return }
+        sheet = LogPresentation(action: value, archiveRoot: root)
     }
 
     private func saved() {
@@ -391,9 +399,9 @@ struct LogListView: View {
     }
 
     @ViewBuilder
-    private func form(for sheet: LogSheet) -> some View {
-        let book = folder.book?.root == presentationArchiveRoot ? folder.book : nil
-        switch sheet {
+    private func form(for presentation: LogPresentation) -> some View {
+        let book = folder.book?.root == presentation.archiveRoot ? folder.book : nil
+        switch presentation.action {
         case .inspect(let item):
             LogReadOnlyDetailView(item: item)
         case .newRefuel:

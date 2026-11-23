@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import JavaScriptCore
 import os
 import I20Core
@@ -12,6 +13,8 @@ enum AnalyticsError: Error, Equatable, LocalizedError {
     case stillDownloading(Int)
     /// Writing derived/ on this device failed.
     case saveFailed(String)
+    /// Inputs changed while being read; never certify a generation against newer, unanalysed files.
+    case sourceChanged
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +23,7 @@ enum AnalyticsError: Error, Equatable, LocalizedError {
         case .failed(let ms): "Analysis failed: " + ms.joined(separator: "; ")
         case .stillDownloading(let n): "\(n) file\(n == 1 ? "" : "s") still downloading from iCloud \u{2014} sync again shortly."
         case .saveFailed(let m): "Couldn't save the dashboard on this iPhone (\(m))."
+        case .sourceChanged: "The archive changed while analysis was running. Refresh after it finishes syncing."
         }
     }
 }
@@ -45,6 +49,7 @@ final class AnalyticsRunner {
             .appending(path: AnalyticsGeneration.archiveID(for: book.root), directoryHint: .isDirectory)
     }
     let script: URL?
+    private let beforePublication: (@Sendable () throws -> Void)?
     /// How long to wait for one iCloud placeholder to download.
     var downloadTimeout: TimeInterval = AnalyticsRunner.defaultDownloadTimeout
     /// Problems of the last run (reset at its start): analytics page errors, raw files that couldn't be read or
@@ -53,9 +58,11 @@ final class AnalyticsRunner {
     private(set) var issues: [String] = []
 
     init(derivedDir: URL = AnalyticsRunner.defaultDerivedDir,
-         script: URL? = Bundle.main.url(forResource: "analytics", withExtension: "js")) {
+         script: URL? = Bundle.main.url(forResource: "analytics", withExtension: "js"),
+         beforePublication: (@Sendable () throws -> Void)? = nil) {
         self.storageRoot = derivedDir
         self.script = script
+        self.beforePublication = beforePublication
     }
 
     /// `YYYY-MM-DD` in Asia/Kolkata, whatever the device's time zone.
@@ -70,9 +77,25 @@ final class AnalyticsRunner {
     func run(book: Book, today: String) async throws -> (data: Data, fuel: Data?, performance: Data) {
         issues = []
         let result = await worker.perform(book: book, today: today, script: script,
-                                          storageRoot: storageRoot, downloadTimeout: downloadTimeout)
+                                          storageRoot: storageRoot, downloadTimeout: downloadTimeout,
+                                          onlyIfNeeded: false, beforePublication: beforePublication, onRebuild: nil)
         issues = result.issues
-        return try result.output.get()
+        guard let output = try result.output.get() else { throw AnalyticsError.failed(["no output"]) }
+        return output
+    }
+
+    /// Passive lifecycle refresh: metadata checks run on the worker, with no provider or archive writes.
+    /// Returns true only when a new complete generation was published.
+    func runIfNeeded(book: Book, today: String,
+                     onRebuild: (@Sendable () async -> Void)? = nil) async throws -> Bool {
+        let result = await worker.perform(book: book, today: today, script: script,
+                                          storageRoot: storageRoot, downloadTimeout: downloadTimeout,
+                                          onlyIfNeeded: true, beforePublication: beforePublication, onRebuild: onRebuild)
+        switch result.output {
+        case .success(nil): return false  // Keep current diagnostic warnings as well as the cached data.
+        case .success: issues = result.issues; return true
+        case .failure(let error): issues = result.issues; throw error
+        }
     }
 
     /// Skipped-entry warnings from the analytics ("skipping entry <id>: reason") that `skippedEntries` hasn't
@@ -104,7 +127,7 @@ final class AnalyticsRunner {
 }
 
 private struct AnalyticsRunResult {
-    let output: Result<(data: Data, fuel: Data?, performance: Data), Error>
+    let output: Result<(data: Data, fuel: Data?, performance: Data)?, Error>
     let issues: [String]
 }
 
@@ -113,27 +136,50 @@ private actor AnalyticsWorker {
     private static let log = Logger(subsystem: "com.i20logbook.app", category: "analytics-worker")
 
     func perform(book: Book, today: String, script: URL?, storageRoot: URL,
-                 downloadTimeout: TimeInterval) async -> AnalyticsRunResult {
+                 downloadTimeout: TimeInterval, onlyIfNeeded: Bool,
+                 beforePublication: (@Sendable () throws -> Void)?,
+                 onRebuild: (@Sendable () async -> Void)?) async -> AnalyticsRunResult {
         issues = []
         do {
             let out = try await run(book: book, today: today, script: script,
-                                    storageRoot: storageRoot, downloadTimeout: downloadTimeout)
+                                    storageRoot: storageRoot, downloadTimeout: downloadTimeout,
+                                    onlyIfNeeded: onlyIfNeeded, beforePublication: beforePublication, onRebuild: onRebuild)
             return AnalyticsRunResult(output: .success(out), issues: issues)
         } catch {
             return AnalyticsRunResult(output: .failure(error), issues: issues)
         }
     }
 
-    private func run(book: Book, today: String, script: URL?, storageRoot: URL, downloadTimeout: TimeInterval) async throws -> (data: Data, fuel: Data?, performance: Data) {
-        guard let script, let source = try? String(contentsOf: script, encoding: .utf8) else {
+    private func run(book: Book, today: String, script: URL?, storageRoot: URL, downloadTimeout: TimeInterval,
+                     onlyIfNeeded: Bool, beforePublication: (@Sendable () throws -> Void)?,
+                     onRebuild: (@Sendable () async -> Void)?) async throws
+        -> (data: Data, fuel: Data?, performance: Data)? {
+        guard let script, let scriptData = try? Data(contentsOf: script),
+              let source = String(data: scriptData, encoding: .utf8) else {
             throw AnalyticsError.bundleMissing
         }
         var issues: [String] = []
         let started = Date()
+        let scriptDigest = Self.digest(scriptData)
+        let initial = try inputSnapshot(book)
+        let inputs = AnalyticsGeneration.Inputs(signature: initial.signature, day: today, scriptDigest: scriptDigest)
+        let store = AnalyticsGeneration(root: storageRoot)
+        if onlyIfNeeded, let manifest = store.manifest,
+           manifest.archiveID == AnalyticsGeneration.archiveID(for: book.root), manifest.inputs == inputs,
+           let files = manifest.files, Set(files).count == files.count,
+           Set(files).isSubset(of: ["data.json", "performance.json", "fuel.json"]),
+           Set(files).isSuperset(of: ["data.json", "performance.json"]), !initial.hasPlaceholders,
+           files.allSatisfy({
+               let attributes = try? FileManager.default.attributesOfItem(atPath: store.directory.appending(path: $0).path)
+               return attributes?[.type] as? FileAttributeType == .typeRegular
+           }) {
+            return nil
+        }
 
-        // 1. Every raw/** and log/** JSON except *.meta.json, downloaded if it is an iCloud placeholder.
-        let paths = try (book.allFiles(under: "raw") + book.allFiles(under: "log"))
-            .filter { $0.hasSuffix(".json") && !$0.hasSuffix(".meta.json") }
+        await onRebuild?()
+        try Task.checkCancellation()
+        // Download the initial JSON set, then capture the exact local metadata that will be analysed.
+        let paths = initial.paths
         let timeout = downloadTimeout
         // Bound cloud requests: a large archive must not create thousands of simultaneous tasks.
         let missing = await withTaskGroup(of: String?.self) { group in
@@ -158,6 +204,10 @@ private actor AnalyticsWorker {
             self.issues = missing.sorted().map { "\($0): still downloading from iCloud" }
             throw AnalyticsError.stillDownloading(missing.count)
         }
+
+        let analysed = try inputSnapshot(book)
+        guard analysed.paths == paths, !analysed.hasPlaceholders else { throw AnalyticsError.sourceChanged }
+        let analysedInputs = AnalyticsGeneration.Inputs(signature: analysed.signature, day: today, scriptDigest: scriptDigest)
 
         // Log entries Swift can't read (newer schema, bad shape) are listed; the JS skips newer schemas too.
         issues += AnalyticsRunner.skippedEntries(book)
@@ -215,14 +265,72 @@ private actor AnalyticsWorker {
         }
         let fuel = string("fuel").map { Data($0.utf8) }
         try Task.checkCancellation()
+        try beforePublication?()
+        // Check after JS evaluation, against the pre-read snapshot rather than stamping whatever is
+        // on disk now. A concurrent editor must not make old results appear current.
+        let final = try inputSnapshot(book)
+        guard final.signature == analysed.signature,
+              let currentScript = try? Data(contentsOf: script), Self.digest(currentScript) == scriptDigest else {
+            throw AnalyticsError.sourceChanged
+        }
         do {
-            try AnalyticsGeneration(root: storageRoot).publish(data: data, fuel: fuel, performance: performance,
-                archiveID: AnalyticsGeneration.archiveID(for: book.root))
+            try store.publish(data: data, fuel: fuel, performance: performance,
+                archiveID: AnalyticsGeneration.archiveID(for: book.root), inputs: analysedInputs)
         } catch is CancellationError { throw CancellationError() }
         catch { throw AnalyticsError.saveFailed("local cache write failed") }
 
         Self.log.info("analytics: \(paths.count) files in \(Date().timeIntervalSince(started), format: .fixed(precision: 2)) s, \(issues.count) issues")
         return (data, fuel, performance)
+    }
+
+    private struct InputSnapshot {
+        let paths: [String]
+        let signature: String
+        let hasPlaceholders: Bool
+    }
+
+    private struct FileMetadata: Encodable {
+        let path: String
+        let availability: String
+        let size: UInt64
+        let modified: String
+    }
+
+    /// Runs only on this worker's executor. Photos and collection sidecars are not analytical inputs.
+    /// Placeholder metadata is included so hydration or newly arriving cloud files invalidate the cache.
+    private func inputSnapshot(_ book: Book) throws -> InputSnapshot {
+        let paths = try (book.allFiles(under: "raw") + book.allFiles(under: "log"))
+            .filter { $0.hasSuffix(".json") && !$0.hasSuffix(".meta.json") }.sorted()
+        var metadata: [FileMetadata] = []
+        var hasPlaceholders = false
+        let fm = FileManager.default
+        for path in paths {
+            try Task.checkCancellation()
+            let file = try book.checkedURL(path)
+            let placeholder = file.deletingLastPathComponent().appending(path: "." + file.lastPathComponent + ".icloud")
+            var found = false
+            for (url, availability) in [(file, "local"), (placeholder, "placeholder")] {
+                guard let attributes = try? fm.attributesOfItem(atPath: url.path) else { continue }
+                guard attributes[.type] as? FileAttributeType == .typeRegular,
+                      let size = attributes[.size] as? NSNumber,
+                      let modified = attributes[.modificationDate] as? Date else { throw AnalyticsError.sourceChanged }
+                found = true
+                if availability == "placeholder" { hasPlaceholders = true }
+                metadata.append(FileMetadata(path: path, availability: availability, size: size.uint64Value,
+                    modified: String(modified.timeIntervalSinceReferenceDate.bitPattern, radix: 16)))
+                // Match Book.read/ensureDownloaded: a materialized file wins over a shadow marker.
+                // Cloud providers can briefly retain both; that marker must not force a rebuild loop.
+                if availability == "local" { break }
+            }
+            guard found else { throw AnalyticsError.sourceChanged }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return InputSnapshot(paths: paths, signature: Self.digest(try encoder.encode(metadata)), hasPlaceholders: hasPlaceholders)
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
 }

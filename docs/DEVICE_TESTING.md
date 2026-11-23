@@ -18,7 +18,9 @@ Entering `public` alone is insufficient: it is still inside the original reposit
 Then run:
 
 ```sh
+git fetch origin
 git switch codex/v2-native-foundation
+git pull --ff-only origin codex/v2-native-foundation
 npm ci --prefix analytics
 npm run build --prefix analytics
 cd ios
@@ -44,7 +46,7 @@ Check the following:
 2. Trips can be searched by place/date, filtered, opened and navigated back from. Route geometry should remain viewable when map tiles are unavailable.
 3. Garage opens the editable logbook. Add a clearly named test refuel with a typed odometer, edit it and delete it. Confirm that only the copied archive changed.
 4. Lab opens the scenario calculator and Data quality. Hypothetical inputs, estimated values and unknown values should be distinguishable.
-5. Pull to refresh and opening Settings should not freeze scrolling or strand the interface in a spinner. After changing a record, the next complete analysis should reflect it.
+5. Pull to refresh and opening Settings should not freeze scrolling or strand the interface in a spinner. After changing a record, the next complete analysis should reflect it. After the first analysis, repeatedly visit Today and Lab → Detailed analysis, then background and reopen the app. With unchanged data on the same day, these passive visits should check the cache without repeatedly recalculating. An explicit refresh should complete once. Keep Allow archive changes off for this browsing check.
 6. Try light/dark appearance, your normal Dynamic Type size, one larger text setting, and one-handed use with the keyboard visible.
 
 Report the phone model/iOS version, screen/action and observed behaviour. Screenshots are helpful if they contain only synthetic records. Do not attach real routes, credentials, personal folder paths or vehicle identifiers to a public issue.

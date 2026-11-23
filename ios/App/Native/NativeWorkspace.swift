@@ -33,6 +33,8 @@ struct NativeWorkspace: View {
                 .tabItem { Label("Lab", systemImage: "waveform.path.ecg") }
                 .tag(3)
         }
+        // Changing archives discards retained navigation stacks and their old web pages.
+        .id(folder.book?.root)
         .tint(NativeTheme.accent)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -81,8 +83,7 @@ struct NativeWorkspace: View {
             loadError = nil
             loadRevision += 1
             // Re-picking an archive must invalidate the old archive’s read models immediately.
-            if sync.hasCurrentArchiveSnapshot { startRefresh() }
-            else { sync.rebuild() }
+            startRefresh()
         }
         .onChange(of: sync.finishedRuns) { _, _ in loadRevision += 1 }
         .onChange(of: folder.automaticSyncEnabled) { _, enabled in if enabled { startRefresh() } }
@@ -90,12 +91,9 @@ struct NativeWorkspace: View {
     }
 
     private func startRefresh() {
-        if !folder.writesAllowed || !folder.automaticSyncEnabled || (Credentials.load() == nil && !DebugHarness.active) {
-            // Opening the app never opts an archive into writes or automatic collection.
-            sync.rebuild()
-        } else {
-            sync.syncIfStale()
-        }
+        // Passive lifecycle requests share the coordinator's cache/collection policy.
+        // User refreshes and saved edits still explicitly force a rebuild.
+        sync.syncIfStale()
     }
 
     @MainActor

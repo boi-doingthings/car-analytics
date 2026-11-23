@@ -72,6 +72,7 @@ final class SyncCoordinator: ObservableObject {
         return runner.matches(selected) ? runner.derivedDir : runner.unavailableDirectory(for: selected)
     }
     var hasCurrentArchiveSnapshot: Bool { book().map { runner.matches($0) } ?? false }
+    var archiveAllowsChanges: Bool { book()?.canWrite == true }
 
     /// Re-reads `state/last_sync.json` from the book (no wait for an iCloud download).
     func refreshLastSync() {
@@ -92,17 +93,18 @@ final class SyncCoordinator: ObservableObject {
         return n.date(from: s)
     }
 
-    /// Full sync when the last one is older than 12 h (or unknown); otherwise rebuilds the analytics if
-    /// derived/ has no dashboard yet. Does nothing while a run is going.
+    /// Automatically collect only with write consent, automatic-sync consent and saved credentials.
+    /// Otherwise check whether the cached analysis needs rebuilding. Passive events never queue work
+    /// behind an already active run.
     func syncIfStale() {
         guard !state.running else { return }
-        guard book()?.canWrite == true, automaticCollection() else {
-            rebuild()
+        guard book()?.canWrite == true, automaticCollection(), credentials() != nil else {
+            rebuildIfNeeded()
             return
         }
         refreshLastSync()
         if let last = state.lastSync, now().timeIntervalSince(last) <= Self.staleAfter {
-            if !FileManager.default.fileExists(atPath: derivedDir.appending(path: "data.json").path) { rebuild() }
+            rebuildIfNeeded()
         } else {
             syncNow()
         }
@@ -128,17 +130,26 @@ final class SyncCoordinator: ObservableObject {
         task = Task { await self.runSequence(collect: false) }
     }
 
-    private func runSequence(collect: Bool) async {
+    /// Idempotent lifecycle refresh. An event arriving during any current operation is already
+    /// covered by that operation; it must not queue the forced follow-up reserved for saved edits.
+    func rebuildIfNeeded() {
+        guard !state.running else { return }
+        begin(step: "check")
+        task = Task { await self.runSequence(collect: false, onlyIfNeeded: true) }
+    }
+
+    private func runSequence(collect: Bool, onlyIfNeeded: Bool = false) async {
         var error: String?
         var published = false
         var collectionFailed = false
         do {
-            if collect { try await fullSync() }
-            else {
+            if collect {
+                try await fullSync()
+                published = true
+            } else {
                 guard let book = book() else { throw BookError.unreachable }
-                try await analyse(book, collectorIssues: [])
+                published = try await analyse(book, collectorIssues: [], onlyIfNeeded: onlyIfNeeded)
             }
-            published = true
         } catch let failure {
             error = Self.text(for: failure)
             collectionFailed = collect
@@ -148,8 +159,7 @@ final class SyncCoordinator: ObservableObject {
             state.step = "analyse"
             do {
                 guard let book = book() else { throw BookError.unreachable }
-                try await analyse(book, collectorIssues: state.stats?.errors ?? [])
-                published = true
+                published = try await analyse(book, collectorIssues: state.stats?.errors ?? []) || published
                 if !collectionFailed { error = nil }
             } catch let failure {
                 error = Self.text(for: failure)
@@ -184,17 +194,23 @@ final class SyncCoordinator: ObservableObject {
         state.stats = stats
         refreshLastSync()
         state.step = "analyse"
-        try await analyse(book, collectorIssues: stats.errors)
+        _ = try await analyse(book, collectorIssues: stats.errors)
     }
 
-    private func analyse(_ book: Book, collectorIssues: [String]) async throws {
+    private func analyse(_ book: Book, collectorIssues: [String], onlyIfNeeded: Bool = false) async throws -> Bool {
         let runner = self.runner
         let today = AnalyticsRunner.istDay(now())
         defer { state.issues = collectorIssues + runner.issues }
-        _ = try await runner.run(book: book, today: today)
+        let published: Bool
+        if onlyIfNeeded {
+            published = try await runner.runIfNeeded(book: book, today: today) { [weak self] in
+                await MainActor.run { self?.state.step = "analyse" }
+            }
+        } else { _ = try await runner.run(book: book, today: today); published = true }
         if self.book()?.root != book.root { rebuildPending = true }
         state.lastAnalysis = hasCurrentArchiveSnapshot ? runner.publishedAt : nil
         refreshLastSync()
+        return published
     }
 
     private func finish(error: String?, published: Bool) {
