@@ -90,12 +90,12 @@ struct SettingsView: View {
                 set: { folder.setAutomaticSyncEnabled($0) }))
                 .disabled(!folder.writesAllowed)
                 .accessibilityIdentifier("automaticCollectionToggle")
-                .accessibilityHint("When enabled, the app may collect vehicle data when opened if the last collection is stale.")
+                .accessibilityHint("Checks when the app opens or returns to the foreground; collects if the last sync was more than 12 hours ago.")
         } header: {
             Text("Archive access")
         } footer: {
             Text(folder.writesAllowed
-                 ? "Changes are allowed for this archive. Manual collection uses Sync now. Automatic collection is a separate choice and requires working vehicle credentials. Keep a verified backup; cloud synchronization is not a backup."
+                 ? "Changes are allowed for this archive. Sync now collects on demand. Automatic collection checks when the app opens or returns to the foreground and the last sync is over 12 hours old; it does not run after every drive while the app is closed. Collection requires working vehicle credentials and local provider configuration. Keep a verified backup; cloud synchronization is not a backup."
                  : "Read-only keeps your archive unchanged. You can browse records and rebuild analysis in this app’s local cache. Enable changes only when you want to add, edit or delete records, or save new vehicle collection. Make and verify a separate backup first.")
         }
     }

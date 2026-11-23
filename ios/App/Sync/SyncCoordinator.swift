@@ -26,6 +26,7 @@ final class SyncCoordinator: ObservableObject {
     static let staleAfter: TimeInterval = 12 * 3600
     static let timeoutText = "Hyundai's server didn't respond. Try again in a few minutes."
     static let loginText = "Bluelink login failed. Check your username and password in Settings."
+    static let configurationText = "This app build is missing its local Bluelink configuration. Add the private configuration and rebuild the app, then retry. Your saved account and archive are unchanged."
     static let folderText = "Can't reach the i20_book folder in iCloud Drive."
 
     @Published private(set) var state = SyncState()
@@ -224,6 +225,7 @@ final class SyncCoordinator: ObservableObject {
         switch error {
         case BluelinkError.timeout: return timeoutText
         case BluelinkError.loginFailed: return loginText
+        case BluelinkError.configurationMissing: return configurationText
         case BookError.readOnly: return "This archive is read-only. Rebuild its analysis, or enable archive changes in Settings."
         // Book reads/writes (the collector's and the runner's) are the only file operations that throw
         // these; derived/ writes surface as AnalyticsError.saveFailed.

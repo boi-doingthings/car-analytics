@@ -92,6 +92,7 @@ final class SyncCoordinatorTests: XCTestCase {
         let cases: [(Error, String)] = [
             (BluelinkError.timeout, "Hyundai's server didn't respond. Try again in a few minutes."),
             (BluelinkError.loginFailed, "Bluelink login failed. Check your username and password in Settings."),
+            (BluelinkError.configurationMissing, "This app build is missing its local Bluelink configuration. Add the private configuration and rebuild the app, then retry. Your saved account and archive are unchanged."),
         ]
         for (err, text) in cases {
             let sync = coordinator(book: book) { _, _ in throw err }

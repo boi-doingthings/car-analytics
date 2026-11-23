@@ -17,9 +17,19 @@ A picker selection does not migrate, clear or rewrite the existing archive. Impo
 |---|---|
 | Changes off | Browse records and rebuild app-local analysis; archive record/photo writes, deletion and vehicle collection are blocked |
 | Changes on, automatic collection off | Add/edit/delete records; explicit Sync now or pull-to-refresh can collect vehicle data |
-| Changes on, automatic collection on | The app may collect vehicle data automatically when opened and stale |
+| Changes on, automatic collection on | Checks on opening/foregrounding; collects when the last sync is over 12 hours old |
 
 Permission is enforced by the archive writer itself, not only by disabled UI controls. Turning changes off revokes existing writer references. An already-started provider request may finish, but subsequent archive writes and provider requests are blocked after revocation.
+
+### Live collection setup and retention
+
+Saved account credentials and provider configuration are separate. The device Keychain holds the username/password. The locally built app also needs the four provider settings in the Git-ignored `ios/App/Resources/Bluelink.local.plist`, copied from the example and populated using authorized local configuration. Regenerate the Xcode project and rebuild after adding that file. A missing-configuration error happens before the login network request and does not establish whether the account credentials are correct. Never commit the local plist or distribute a build containing it as a public artifact.
+
+Automatic collection currently runs only on eligible foreground events, with a 12-hour stale threshold. There is no after-drive trigger or background collection while the app is closed. Use Sync now to request newer provider data sooner; availability still depends on Hyundai returning the new trips.
+
+The collector does not delete raw history. It adds timestamped snapshots and missing responses, but the archive is not an immutable record of every fetched revision: non-final day responses can be replaced, and routes with at most one point can be refreshed for non-final days. A day is final once its successful fetch was at least seven India-calendar days after that day; finalized day files are not overwritten. Collection also updates sidecars and sync state.
+
+Manual deletion is available for refuel/service/expense records in Garage → Open logbook. Deleting a service also removes its associated photo folder; editing a service can remove photos that were deselected. Failed service saves can clean up newly written attachments. These operations target `log/`, not the collector's `raw/` history. Old app-local analytical generations are also pruned; those are rebuildable caches outside the selected archive.
 
 ## Create and verify a backup
 

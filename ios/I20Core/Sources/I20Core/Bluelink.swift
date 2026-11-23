@@ -55,6 +55,7 @@ public struct Vehicle: Sendable, Equatable {
 }
 
 public enum BluelinkError: Error, Equatable {
+    case configurationMissing
     case loginFailed
     case timeout
     case badResponse(String)
@@ -113,7 +114,7 @@ public final class BluelinkClient: @unchecked Sendable {
     private func loginOnce(username: String, password: String) async throws {
         guard !config.ccspServiceId.isEmpty, !config.appId.isEmpty,
               !config.cfbBase64.isEmpty, !config.basicAuthorization.isEmpty else {
-            throw BluelinkError.badResponse("Local Bluelink configuration is missing")
+            throw BluelinkError.configurationMissing
         }
         let stamp = stamp(at: Int(Date().timeIntervalSince1970))
 
