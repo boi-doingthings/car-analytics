@@ -353,7 +353,14 @@ private func decodeEntries<E: Entry>(_ type: E.Type, names: [String], read: (Str
             skipped.append(SkippedEntry(name: name, reason: .newerSchema(v)))
             continue
         }
-        do { out.append(try dec.decode(E.self, from: data)) } catch {
+        do {
+            let entry = try dec.decode(E.self, from: data)
+            guard entry.id == String(name.dropLast(5)), isLowercaseUUID(entry.id) else {
+                skipped.append(SkippedEntry(name: name, reason: .unreadable("Record ID does not match its filename")))
+                continue
+            }
+            out.append(entry)
+        } catch {
             skipped.append(SkippedEntry(name: name, reason: .unreadable(String(describing: error))))
         }
     }
@@ -373,8 +380,7 @@ private extension Entry {
 
 /// `<lowercase uuid>.json`, the only file names entries are saved under (same rule as the analytics bundle).
 func isEntryFileName(_ name: String) -> Bool {
-    name.count == 41 && name.hasSuffix(".json")
-        && name.dropLast(5).allSatisfy { $0 == "-" || ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    name.count == 41 && name.hasSuffix(".json") && isLowercaseUUID(String(name.dropLast(5)))
 }
 
 private func entryNames(_ kind: EntryKind, _ book: Book) throws -> [String] {

@@ -40,6 +40,7 @@ final class SyncCoordinator: ObservableObject {
     private let runner: AnalyticsRunner
     private let now: () -> Date
     private let collectorPause: Duration
+    private let automaticCollection: () -> Bool
     private var rebuildPending = false
 
     init(book: @escaping () -> Book?,
@@ -47,13 +48,15 @@ final class SyncCoordinator: ObservableObject {
          login: @escaping Login = SyncCoordinator.liveLogin,
          runner: AnalyticsRunner = AnalyticsRunner(),
          now: @escaping () -> Date = Date.init,
-         collectorPause: Duration = .milliseconds(600)) {
+         collectorPause: Duration = .milliseconds(600),
+         automaticCollection: @escaping () -> Bool = { true }) {
         self.book = book
         self.credentials = credentials
         self.login = login
         self.runner = runner
         self.now = now
         self.collectorPause = collectorPause
+        self.automaticCollection = automaticCollection
         self.state.lastAnalysis = book().flatMap { runner.matches($0) ? runner.publishedAt : nil }
     }
 
@@ -93,6 +96,10 @@ final class SyncCoordinator: ObservableObject {
     /// derived/ has no dashboard yet. Does nothing while a run is going.
     func syncIfStale() {
         guard !state.running else { return }
+        guard book()?.canWrite == true, automaticCollection() else {
+            rebuild()
+            return
+        }
         refreshLastSync()
         if let last = state.lastSync, now().timeIntervalSince(last) <= Self.staleAfter {
             if !FileManager.default.fileExists(atPath: derivedDir.appending(path: "data.json").path) { rebuild() }
@@ -104,6 +111,7 @@ final class SyncCoordinator: ObservableObject {
     /// login → collect → analyse. No-op while a run is going.
     func syncNow() {
         guard !state.running else { return }
+        guard book()?.canWrite != false else { rebuild(); return }
         begin(step: "login")
         state.stats = nil  // a full sync replaces the summary; an analytics-only rebuild keeps the last one
         task = Task { await self.runSequence(collect: true) }
@@ -165,10 +173,14 @@ final class SyncCoordinator: ObservableObject {
     private func fullSync() async throws {
         guard let book = book() else { throw BookError.unreachable }
         _ = try book.list("")  // folder reachable before any network call
+        guard book.canWrite else { throw BookError.readOnly }
         guard let (user, pass) = credentials() else { throw BluelinkError.loginFailed }
+        guard book.canWrite else { throw BookError.readOnly }
         let api = try await login(user, pass)
+        guard book.canWrite else { throw BookError.readOnly }
         state.step = "collect"
-        let stats = try await Collector(book: book, api: api, now: { Date() }, pause: collectorPause).run()
+        let protectedAPI = ArchiveAuthorizedAPI(book: book, api: api)
+        let stats = try await Collector(book: book, api: protectedAPI, now: { Date() }, pause: collectorPause).run()
         state.stats = stats
         refreshLastSync()
         state.step = "analyse"
@@ -196,6 +208,7 @@ final class SyncCoordinator: ObservableObject {
         switch error {
         case BluelinkError.timeout: return timeoutText
         case BluelinkError.loginFailed: return loginText
+        case BookError.readOnly: return "This archive is read-only. Rebuild its analysis, or enable archive changes in Settings."
         // Book reads/writes (the collector's and the runner's) are the only file operations that throw
         // these; derived/ writes surface as AnalyticsError.saveFailed.
         case is BookError, is CocoaError: return folderText
@@ -204,5 +217,27 @@ final class SyncCoordinator: ObservableObject {
         case is CancellationError: return "Sync cancelled."
         default: return "Sync failed: \(error.localizedDescription)"
         }
+    }
+}
+
+/// A permission revocation stops subsequent collector requests as well as archive writes. A request
+/// already in flight may complete, but Book's shared policy still rejects any later mutation.
+private struct ArchiveAuthorizedAPI: BluelinkAPI {
+    let book: Book
+    let api: BluelinkAPI
+
+    func vehicles() async throws -> (raw: Data, list: [Vehicle]) {
+        guard book.canWrite else { throw BookError.readOnly }
+        return try await api.vehicles()
+    }
+
+    func get(_ path: String) async throws -> Data {
+        guard book.canWrite else { throw BookError.readOnly }
+        return try await api.get(path)
+    }
+
+    func post(_ path: String, json: [String: Any]) async throws -> Data {
+        guard book.canWrite else { throw BookError.readOnly }
+        return try await api.post(path, json: json)
     }
 }

@@ -6,6 +6,7 @@ enum LogText {
     static let deleteFailed = "Couldn't delete from iCloud Drive (i20_book)."
     static let photosNotDeleted = "The entry was deleted, but its photos couldn't be removed from iCloud Drive (i20_book)."
     static let loadFailed = "Can't read the log in iCloud Drive (i20_book)."
+    static let readOnly = "This archive is read-only. Enable archive changes in Settings before adding, editing or deleting records."
     static let archiveChanged = "The selected logbook or entry changed. Reload it before editing or deleting."
     static let stillDownloading = "Some entries are still downloading from iCloud \u{2014} pull to refresh."
 }
@@ -176,7 +177,7 @@ final class LogStore: ObservableObject {
     /// A loaded record must still belong to the selected archive and retain its loaded contents.
     /// In particular, matching UUIDs in a different archive do not grant permission to overwrite it.
     func editingBook(for item: LogItem, in book: Book?) -> Book? {
-        guard let book, archiveRoot == book.root, items.contains(item) else { return nil }
+        guard let book, book.canWrite, archiveRoot == book.root, items.contains(item) else { return nil }
         return book
     }
 
@@ -186,6 +187,10 @@ final class LogStore: ObservableObject {
     func delete(_ item: LogItem, in book: Book?) -> Bool {
         guard let book else {
             actionError = LogText.deleteFailed
+            return false
+        }
+        guard book.canWrite else {
+            actionError = LogText.readOnly
             return false
         }
         guard editingBook(for: item, in: book) != nil else {
@@ -225,15 +230,18 @@ struct LogListView: View {
     @State private var pendingDelete: LogItem?
     @State private var presentationArchiveRoot: URL?
     @State private var deletionArchiveRoot: URL?
+    @State private var showAccessSettings = false
 
     enum LogSheet: Identifiable {
         case newRefuel, newService, newOther
         case edit(LogItem)
+        case inspect(LogItem)
 
         var id: String {
             switch self {
             case .newRefuel: "new-refuel"; case .newService: "new-service"; case .newOther: "new-other"
             case .edit(let i): i.id
+            case .inspect(let i): "inspect-\(i.id)"
             }
         }
     }
@@ -241,6 +249,16 @@ struct LogListView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !folder.writesAllowed {
+                    HStack {
+                        Label("Read-only", systemImage: "lock").font(.subheadline)
+                        Spacer(minLength: 0)
+                        Button("Manage access") { showAccessSettings = true }
+                            .font(.subheadline)
+                            .accessibilityIdentifier("logManageArchiveAccess")
+                    }
+                    .accessibilityIdentifier("logReadOnlyStatus")
+                }
                 Picker("Show", selection: $filter) {
                     ForEach(LogFilter.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -251,14 +269,16 @@ struct LogListView: View {
                     Text(e).foregroundStyle(.red)
                 }
                 ForEach(store.visible(filter)) { item in
-                    Button { present(.edit(item)) } label: { LogRow(item: item) }
+                    Button { present(folder.writesAllowed ? .edit(item) : .inspect(item)) } label: { LogRow(item: item) }
                         .foregroundStyle(.primary)
                         .swipeActions {
-                            Button(role: .destructive) {
-                                deletionArchiveRoot = folder.book?.root
-                                pendingDelete = item
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                            if folder.writesAllowed {
+                                Button(role: .destructive) {
+                                    deletionArchiveRoot = folder.book?.root
+                                    pendingDelete = item
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                 }
@@ -277,6 +297,7 @@ struct LogListView: View {
                     Image(systemName: "plus")
                 }
                 .accessibilityIdentifier("addMenu")
+                .disabled(!folder.writesAllowed)
             }
             .safeAreaInset(edge: .bottom) {
                 Button { present(.newRefuel) } label: {
@@ -286,6 +307,7 @@ struct LogListView: View {
                 .controlSize(.large)
                 .padding()
                 .accessibilityIdentifier("refuelButton")
+                .disabled(!folder.writesAllowed)
             }
             .refreshable { await store.load(from: folder.book) }
             .task(id: folder.book?.root) { await store.load(from: folder.book) }
@@ -295,10 +317,26 @@ struct LogListView: View {
                 presentationArchiveRoot = nil
                 deletionArchiveRoot = nil
             }
+            .onChange(of: folder.writesAllowed) { _, allowed in
+                if !allowed {
+                    if let current = sheet {
+                        switch current { case .inspect: break; default: sheet = nil }
+                    }
+                    pendingDelete = nil
+                    deletionArchiveRoot = nil
+                }
+            }
             .sheet(item: $sheet) { form(for: $0) }
+            .sheet(isPresented: $showAccessSettings) {
+                SettingsView().presentationDragIndicator(.visible)
+            }
             .confirmationDialog("Delete this entry?", isPresented: deleteDialogShown, titleVisibility: .visible,
                                 presenting: pendingDelete) { item in
                 Button("Delete", role: .destructive) {
+                    guard folder.writesAllowed else {
+                        store.actionError = LogText.readOnly
+                        return
+                    }
                     guard deletionArchiveRoot == folder.book?.root else {
                         store.actionError = LogText.archiveChanged
                         return
@@ -327,6 +365,11 @@ struct LogListView: View {
     }
 
     private func present(_ value: LogSheet) {
+        switch value {
+        case .inspect: break
+        default:
+            guard folder.writesAllowed else { store.actionError = LogText.readOnly; return }
+        }
         if case .edit(let item) = value, store.editingBook(for: item, in: folder.book) == nil {
             store.actionError = LogText.archiveChanged
             return
@@ -351,6 +394,8 @@ struct LogListView: View {
     private func form(for sheet: LogSheet) -> some View {
         let book = folder.book?.root == presentationArchiveRoot ? folder.book : nil
         switch sheet {
+        case .inspect(let item):
+            LogReadOnlyDetailView(item: item)
         case .newRefuel:
             RefuelForm(model: RefuelFormModel(past: store.refuels), book: book, onSaved: saved)
         case .newService:
@@ -416,5 +461,97 @@ struct LogRow: View {
 
     private var amount: Double? {
         switch item { case .refuel(let r): r.amount; case .service(let s): s.total; case .maintenance(let m): m.cost }
+    }
+}
+
+/// Browsing a record never instantiates a form or exposes a save/delete action.
+private struct LogReadOnlyDetailView: View {
+    let item: LogItem
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Label("Read-only archive", systemImage: "lock")
+                    LabeledContent("Date", value: item.date)
+                } footer: {
+                    Text("Browse this record without changing it. Archive changes can be enabled in Settings.")
+                }
+                switch item {
+                case .refuel(let record):
+                    Section("Refuel") {
+                        field("Station", record.station)
+                        field("Company", record.company)
+                        field("Time", record.time)
+                        amount("Payment", record.amount, suffix: "INR")
+                        amount("Litres", record.litres, suffix: "L")
+                        amount("Rate", record.rate, suffix: "INR/L")
+                        amount("Odometer", record.odometerKm, suffix: "km")
+                        LabeledContent("Tank", value: record.fullTank.map { $0 ? "Full" : "Partial" } ?? "Not recorded")
+                        LabeledContent("Missed fill", value: record.missed ? "Yes" : "No")
+                        field("Note", record.note)
+                    }
+                case .service(let record):
+                    Section("Service") {
+                        field("Workshop", record.workshop)
+                        field("Kind", record.kindName)
+                        field("Invoice", record.invoice)
+                        amount("Odometer", record.odometerKm, suffix: "km")
+                        amount("Parts", record.partsTotal, suffix: "INR")
+                        amount("Tax", record.gst, suffix: "INR")
+                        amount("Total", record.total, suffix: "INR")
+                        field("Notes", record.notes)
+                    }
+                    if !record.parts.isEmpty {
+                        Section("Parts") {
+                            ForEach(Array(record.parts.enumerated()), id: \.offset) { _, part in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(part.name)
+                                    Text("\(plainNumber(part.amount)) INR").font(.subheadline).foregroundStyle(.secondary)
+                                    if !part.resets.isEmpty { Text("Resets: \(part.resets.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary) }
+                                }
+                            }
+                        }
+                    }
+                    if !record.labour.isEmpty {
+                        Section("Labour") {
+                            ForEach(Array(record.labour.enumerated()), id: \.offset) { _, labour in
+                                LabeledContent(labour.name, value: "\(plainNumber(labour.amount)) INR")
+                            }
+                        }
+                    }
+                    if !record.photos.isEmpty {
+                        Section {
+                            LabeledContent("Attached photos", value: "\(record.photos.count)")
+                        } footer: {
+                            Text("Original attachments remain in the archive.")
+                        }
+                    }
+                case .maintenance(let record):
+                    Section("Expense or maintenance") {
+                        LabeledContent("Category", value: record.category.label)
+                        amount("Cost", record.cost, suffix: "INR")
+                        amount("Odometer", record.odometerKm, suffix: "km")
+                        field("Note", record.note)
+                        field("Reminder", record.reminder)
+                    }
+                }
+            }
+            .navigationTitle("Record details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .accessibilityIdentifier("readOnlyLogDetail")
+        }
+    }
+
+    @ViewBuilder private func field(_ title: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty { LabeledContent(title, value: value) }
+    }
+
+    private func amount(_ title: String, _ value: Double?, suffix: String) -> some View {
+        LabeledContent(title, value: value.map { "\(plainNumber($0)) \(suffix)" } ?? "Not recorded")
     }
 }

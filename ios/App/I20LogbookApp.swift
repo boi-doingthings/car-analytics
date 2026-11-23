@@ -13,11 +13,11 @@ struct I20LogbookApp: App {
         if let harness = DebugHarness.fromEnvironment() {
             folder.book = harness.book
             _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }, credentials: { ("debug", "debug") },
-                                                              login: harness.login))
+                                                              login: harness.login, automaticCollection: { folder.automaticSyncEnabled }))
             return
         }
         #endif
-        _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }))
+        _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }, automaticCollection: { folder.automaticSyncEnabled }))
     }
 
     var body: some Scene {

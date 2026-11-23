@@ -52,6 +52,9 @@ struct NativeGarageView: View {
             .refreshable { await store.load(from: folder.book) }
             .task(id: folder.book?.root) { await store.load(from: folder.book) }
             .onChange(of: sync.finishedRuns) { _, _ in Task { await store.load(from: folder.book) } }
+            .onChange(of: folder.writesAllowed) { _, allowed in
+                if !allowed && sheet != .logbook { sheet = nil }
+            }
             .sheet(item: $sheet, onDismiss: { Task { await store.load(from: folder.book) } }) { item in
                 switch item {
                 case .refuel:
@@ -87,7 +90,10 @@ struct NativeGarageView: View {
     }
 
     private func addButton(_ title: String, symbol: String, sheet value: GarageSheet) -> some View {
-        Button { sheet = value } label: {
+        Button {
+            guard folder.writesAllowed else { return }
+            sheet = value
+        } label: {
             VStack(spacing: 9) {
                 Image(systemName: symbol).font(.title3)
                 Text(title).font(.subheadline.weight(.medium))
@@ -95,7 +101,12 @@ struct NativeGarageView: View {
             .frame(maxWidth: .infinity, minHeight: 76)
             .padding(8)
             .background(NativeTheme.surface, in: RoundedRectangle(cornerRadius: 18))
-        }.buttonStyle(.plain).accessibilityIdentifier("garageAdd\(title)")
+        }
+        .buttonStyle(.plain)
+        .disabled(!folder.writesAllowed)
+        .opacity(folder.writesAllowed ? 1 : 0.5)
+        .accessibilityIdentifier("garageAdd\(title)")
+        .accessibilityHint(folder.writesAllowed ? "Add a record to this archive." : "Enable archive changes in Settings to add records.")
     }
 
     private var cashCard: some View {
@@ -109,7 +120,7 @@ struct NativeGarageView: View {
                 Text("\(period.count - known.count) records have no amount and are excluded from the total.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if period.isEmpty { Text("Add a refuel, service or expense to start tracking this period.").font(.subheadline) }
+            if period.isEmpty { Text("No payments were logged in this period.").font(.subheadline) }
         }
     }
 
@@ -153,7 +164,9 @@ struct NativeGarageView: View {
                 Text("Verify the service schedule and actual work with your workshop. Distance dates depend on your future usage.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Maintenance items appear after a vehicle sync. You can log a service or dated reminder at any time.")
+                Text(folder.writesAllowed
+                     ? "Maintenance items appear after a vehicle sync. You can log a service or dated reminder at any time."
+                     : "Maintenance items appear from archived vehicle records. Enable archive changes in Settings to add a service or reminder.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
         }

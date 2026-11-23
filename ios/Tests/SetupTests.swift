@@ -1,4 +1,5 @@
 import XCTest
+import I20Core
 @testable import I20Logbook
 
 @MainActor
@@ -86,4 +87,57 @@ final class SetupTests: XCTestCase {
         XCTAssertNil(d.data(forKey: FolderAccess.bookmarkKey))
         XCTAssertEqual(f.error, FolderAccess.restoreFailedMessage)
     }
+    func test_archiveConsentIsHashedLocalAndSpecificToSelectedFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "consent-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "first/i20_book")
+        let second = root.appending(path: "second/i20_book")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        let d = defaults()
+        let folder = FolderAccess(defaults: d)
+        folder.activate(first)
+        let old = try XCTUnwrap(folder.book)
+        XCTAssertFalse(folder.writesAllowed)
+        XCTAssertFalse(folder.automaticSyncEnabled)
+        folder.setWritesAllowed(true)
+        folder.setAutomaticSyncEnabled(true)
+        XCTAssertTrue(old.canWrite)
+        XCTAssertTrue(folder.automaticSyncEnabled)
+        XCTAssertFalse(d.dictionaryRepresentation().keys.contains { $0.contains(root.path) })
+        folder.activate(second)
+        XCTAssertFalse(old.canWrite, "a form holding the old Book must immediately lose write permission")
+        XCTAssertFalse(folder.writesAllowed)
+        XCTAssertFalse(folder.automaticSyncEnabled)
+        folder.activate(first)
+        XCTAssertTrue(folder.writesAllowed, "explicit consent persists for this archive only")
+        XCTAssertTrue(folder.automaticSyncEnabled)
+        let restored = FolderAccess(defaults: d)
+        restored.activate(first)
+        XCTAssertTrue(restored.writesAllowed)
+        XCTAssertTrue(restored.automaticSyncEnabled)
+        let freshInstall = FolderAccess(defaults: defaults())
+        freshInstall.activate(first)
+        XCTAssertFalse(freshInstall.writesAllowed)
+        XCTAssertFalse(freshInstall.automaticSyncEnabled)
+    }
+
+    func test_revokingWritesAlsoRevokesAutomaticCollectionUntilExplicitlyEnabledAgain() throws {
+        let folder = FolderAccess(defaults: defaults())
+        folder.book = Book(root: URL(fileURLWithPath: "/tmp/synthetic-consent/i20_book"))
+        XCTAssertTrue(folder.writesAllowed, "debug-injected core Books retain their writable default")
+        XCTAssertFalse(folder.automaticSyncEnabled)
+        folder.setAutomaticSyncEnabled(true)
+        XCTAssertTrue(folder.automaticSyncEnabled)
+        let held = try XCTUnwrap(folder.book)
+        folder.setWritesAllowed(false)
+        XCTAssertFalse(held.canWrite)
+        XCTAssertFalse(folder.automaticSyncEnabled)
+        folder.setAutomaticSyncEnabled(true)
+        XCTAssertFalse(folder.automaticSyncEnabled)
+        folder.setWritesAllowed(true)
+        XCTAssertTrue(held.canWrite)
+        XCTAssertFalse(folder.automaticSyncEnabled)
+    }
+
 }

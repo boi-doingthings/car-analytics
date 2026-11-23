@@ -9,6 +9,21 @@ private struct EmptyAPI: BluelinkAPI {
     func post(_ path: String, json: [String: Any]) async throws -> Data { Data() }
 }
 
+private actor PermissionProbeAPI: BluelinkAPI {
+    private(set) var requests = 0
+    let revokeOnVehicles: BookWriteAuthorization?
+
+    init(revokeOnVehicles: BookWriteAuthorization? = nil) { self.revokeOnVehicles = revokeOnVehicles }
+
+    func vehicles() async throws -> (raw: Data, list: [Vehicle]) {
+        requests += 1
+        revokeOnVehicles?.setAllowed(false)
+        return (Data(), [Vehicle(id: "synthetic-vehicle", ccs2: 0)])
+    }
+    func get(_ path: String) async throws -> Data { requests += 1; return Data() }
+    func post(_ path: String, json: [String: Any]) async throws -> Data { requests += 1; return Data() }
+}
+
 @MainActor
 final class SyncCoordinatorTests: XCTestCase {
     var tmp: URL!
@@ -229,6 +244,92 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertNotNil(sync.state.error)
         XCTAssertNil(sync.state.lastAnalysis)
         XCTAssertNil(sync.state.lastSync)
+    }
+
+    private func archiveContents(_ book: Book) throws -> [String: Data] {
+        try Dictionary(uniqueKeysWithValues: book.allFiles(under: "").map { ($0, try book.read($0)) })
+    }
+
+    func test_readOnlyManualSyncOnlyRebuildsWithoutLoginOrSourceWrites() async throws {
+        let fixture = try fixtureBook()
+        let book = Book(root: fixture.root, writeAuthorization: BookWriteAuthorization(allowed: false))
+        let before = try archiveContents(book)
+        var logins = 0
+        let api = PermissionProbeAPI()
+        let sync = coordinator(book: book) { _, _ in logins += 1; return api }
+        sync.syncNow()
+        XCTAssertEqual(sync.state.step, "analyse")
+        await sync.task?.value
+        XCTAssertEqual(logins, 0)
+        let requests = await api.requests
+        XCTAssertEqual(requests, 0)
+        XCTAssertNil(sync.state.error)
+        XCTAssertTrue(sync.hasCurrentArchiveSnapshot)
+        XCTAssertEqual(try archiveContents(book), before)
+    }
+
+    func test_automaticCollectionNeedsBothWritePermissionAndAutomaticConsent() async throws {
+        let book = try fixtureBook()
+        let before = try archiveContents(book)
+        var logins = 0
+        let sync = SyncCoordinator(book: { book }, credentials: { ("u", "p") },
+            login: { _, _ in logins += 1; return EmptyAPI() },
+            runner: AnalyticsRunner(derivedDir: tmp.appending(path: "derived")),
+            collectorPause: .zero, automaticCollection: { false })
+        sync.syncIfStale()
+        await sync.task?.value
+        XCTAssertEqual(logins, 0)
+        XCTAssertNil(sync.state.error)
+        XCTAssertEqual(try archiveContents(book), before)
+        // Automatic consent does not silently remove the explicitly requested manual-sync capability.
+        sync.syncNow()
+        await sync.task?.value
+        XCTAssertEqual(logins, 1)
+    }
+
+    func test_permissionRevokedBeforeTaskStartsPreventsLogin() async throws {
+        let fixture = try fixtureBook()
+        let policy = BookWriteAuthorization()
+        let book = Book(root: fixture.root, writeAuthorization: policy)
+        let before = try archiveContents(book)
+        var logins = 0
+        let sync = coordinator(book: book) { _, _ in logins += 1; return EmptyAPI() }
+        sync.syncNow()
+        policy.setAllowed(false)
+        await sync.task?.value
+        XCTAssertEqual(logins, 0)
+        XCTAssertEqual(sync.state.error, SyncCoordinator.text(for: BookError.readOnly))
+        XCTAssertEqual(try archiveContents(book), before)
+    }
+
+    func test_permissionRevokedDuringLoginPreventsAnyCollectionRequest() async throws {
+        let fixture = try fixtureBook()
+        let policy = BookWriteAuthorization()
+        let book = Book(root: fixture.root, writeAuthorization: policy)
+        let before = try archiveContents(book)
+        let api = PermissionProbeAPI()
+        let sync = coordinator(book: book) { _, _ in policy.setAllowed(false); return api }
+        sync.syncNow()
+        await sync.task?.value
+        let requests = await api.requests
+        XCTAssertEqual(requests, 0)
+        XCTAssertEqual(sync.state.error, SyncCoordinator.text(for: BookError.readOnly))
+        XCTAssertEqual(try archiveContents(book), before)
+    }
+
+    func test_permissionRevocationStopsSubsequentProviderCalls() async throws {
+        let fixture = try fixtureBook()
+        let policy = BookWriteAuthorization()
+        let book = Book(root: fixture.root, writeAuthorization: policy)
+        let before = try archiveContents(book)
+        let api = PermissionProbeAPI(revokeOnVehicles: policy)
+        let sync = coordinator(book: book) { _, _ in api }
+        sync.syncNow()
+        await sync.task?.value
+        let requests = await api.requests
+        XCTAssertEqual(requests, 1, "the first request revokes consent, so no snapshot or trip calls may follow")
+        XCTAssertEqual(sync.state.error, SyncCoordinator.text(for: BookError.readOnly))
+        XCTAssertEqual(try archiveContents(book), before)
     }
 
 }

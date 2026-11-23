@@ -123,4 +123,36 @@ func fixture(_ name: String) throws -> Data {
         let loaded = try await loadAll(Refuel.self, from: book, timeout: 5)
         #expect(loaded.entries.count == 1 && loaded.skipped.isEmpty)
     }
+    @Test func allEntryKindsRejectAnEmbeddedIDFromAnotherFilename() throws {
+        let (book, tmp) = try makeTempBook()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        func check<E: Entry & Equatable>(_ entry: E) throws {
+            try save(entry, in: book)
+            let original = try book.read("\(E.kind.dir)/\(entry.id).json")
+            let wrongName = newEntryID()
+            try book.writeAtomic("\(E.kind.dir)/\(wrongName).json", JSONEncoder().encode(entry))
+            let loaded = try loadAll(E.self, from: book)
+            #expect(loaded.entries == [entry])
+            #expect(loaded.skipped.count == 1)
+            #expect(loaded.skipped.first?.name == "\(wrongName).json")
+            if case .unreadable(let reason) = loaded.skipped.first?.reason {
+                #expect(reason.contains("ID does not match"))
+            } else { Issue.record("mismatched entry ID was not reported") }
+            #expect(try book.read("\(E.kind.dir)/\(entry.id).json") == original)
+        }
+        try check(Refuel(date: "2026-10-01", station: "Test Pump"))
+        try check(ServiceVisit(date: "2026-10-01"))
+        try check(Maintenance(date: "2026-10-01", category: .other, cost: 100))
+    }
+
+    @Test func invalidUUIDFilenameCannotBecomeAnEditableEntry() throws {
+        let (book, tmp) = try makeTempBook()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let name = String(repeating: "a", count: 36) + ".json"
+        try book.writeAtomic("log/refuels/\(name)", fixture("refuel"))
+        let loaded = try loadAll(Refuel.self, from: book)
+        #expect(loaded.entries.isEmpty)
+        #expect(loaded.skipped.first?.reason == .badName)
+    }
+
 }

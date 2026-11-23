@@ -242,15 +242,20 @@
         markPoint: { symbol: "circle", symbolSize: 10, itemStyle: { color: C.sodium }, label: { show: true, position: "top", color: C.ink, fontFamily: "Instrument Sans", formatter: `σ = ${nf1.format(ev.sigma[best])} L` },
           data: [{ coord: [ev.sigma[best], 0] }] } }],
     });
-    const gain = 1 - m.loo_mae / m.naive_loo_mae;
+    const hasLoo = Number.isFinite(m.loo_mae);
+    const hasBaseline = Number.isFinite(m.naive_loo_mae);
+    const gain = hasLoo && hasBaseline && m.naive_loo_mae > 0 ? 1 - m.loo_mae / m.naive_loo_mae : null;
+    const comparison = gain == null ? "Not enough held-out evidence for a relative comparison"
+      : `${pct(Math.abs(gain))} ${gain >= 0 ? "lower" : "higher"} MAE than the pooled-rate baseline (${nf1.format(m.naive_loo_mae)} L)`;
+    const nested = m.validation?.schema === 1;
     $("#s-model").innerHTML =
-      stat(nf1.format(m.loo_mae), "L", "Leave-one-out error", `Mean absolute error per stretch, ${pct(gain)} lower than a single km/L figure (${nf1.format(m.naive_loo_mae)} L)`) +
-      stat(nf2.format(m.r2), "", "In-sample R²", `Across ${m.n_intervals} clean stretches`) +
+      stat(hasLoo ? nf1.format(m.loo_mae) : "Unavailable", hasLoo ? "L" : "", nested ? "Nested leave-one-out error" : "Legacy leave-one-out diagnostic", comparison) +
+      stat(Number.isFinite(m.r2) ? nf2.format(m.r2) : "Unavailable", "", "In-sample R²", `Across ${m.n_intervals} clean stretches`) +
       stat(nf1.format(m.sigma_l), "L", "Noise per stretch", "Chosen by maximum marginal likelihood") +
       stat(nf2.format(m.posterior_corr[0][1]), "", "City–highway posterior correlation", "Negative: the data trades one off against the other");
     const P = m.prior;
     $("#m-model").innerHTML = `<p>For each clean stretch <code>j</code>: <code>litres_j = a·city_km_j/100 + b·hwy_km_j/100 + c·idle_h_j + ε_j</code>, with <code>ε_j ~ N(0, σ²)</code>. Priors are independent Gaussians: <code>a ~ N(${P.city_l100.mean}, ${P.city_l100.sd}²)</code> L/100 km, <code>b ~ N(${P.hwy_l100.mean}, ${P.hwy_l100.sd}²)</code> L/100 km, <code>c ~ N(${P.idle_lph.mean}, ${P.idle_lph.sd}²)</code> L/h, typical values for a 1.2 L naturally aspirated petrol engine.</p>
-      <p>The model is conjugate, so the posterior is Gaussian in closed form: <code>Σ_n = (Σ_0⁻¹ + XᵀX/σ²)⁻¹</code>, <code>μ_n = Σ_n(Σ_0⁻¹μ_0 + Xᵀy/σ²)</code>. σ is set by maximising the marginal likelihood <code>y ~ N(Xμ_0, XΣ_0Xᵀ + σ²I)</code> over a grid (empirical Bayes). Leave-one-out refits the posterior without each stretch and predicts it; the baseline divides each stretch's distance by the pooled km/L of the others. Intervals shown are ±1.96 posterior SD.</p>
+      <p>The model is conjugate, so the posterior is Gaussian in closed form: <code>Σ_n = (Σ_0⁻¹ + XᵀX/σ²)⁻¹</code>, <code>μ_n = Σ_n(Σ_0⁻¹μ_0 + Xᵀy/σ²)</code>. σ is set by maximising the marginal likelihood <code>y ~ N(Xμ_0, XΣ_0Xᵀ + σ²I)</code> over a grid (empirical Bayes). ${nested ? "Leave-one-out refits both the noise scale and posterior without each held-out stretch, then predicts it" : "This older output refits the posterior without each stretch but uses a noise scale chosen on all stretches"}; the baseline divides each stretch’s distance by the pooled km/L of the same training stretches. Validation is conditional on the reconstructed intervals: upstream distance calibration and fill reconstruction are not independently backtested. Intervals shown are ±1.96 posterior SD.</p>
       <p>Caveats: ${m.n_intervals} stretches is a small sample; the highway/city split is per trip, not per kilometre; and AC use, load and cold starts are folded into the coefficients rather than modelled.</p>`;
   }
 

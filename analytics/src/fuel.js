@@ -1,6 +1,6 @@
 // Fuel model: odometer calibration, brim-to-brim economy, Bayesian consumption model, trip costs and
 // the modelled tank level. Port of fuel.py (the Python output is the oracle); see docs/entry-schemas.md
-// for the refuel entries that feed `fills`.
+// for the refuel entries that feed `fills`. Consumption validation extends the frozen Python reference.
 import { fmtFixed, groupBy, inv, median } from "./util.js";
 
 export const TANK_L = 37.0;
@@ -175,8 +175,10 @@ function cholSolve(L, b) {
 }
 
 /** litres = city_km/100 * a + hwy_km/100 * b + idle_h * c with Gaussian priors on (a, b, c) and
- *  Gaussian noise; the noise scale maximises the marginal likelihood (empirical Bayes). */
-function fitModel(iv) {
+ *  Gaussian noise; the noise scale maximises the marginal likelihood (empirical Bayes).
+ *  Exported to validate the consumption fit independently using invented, constructed intervals.
+ *  Validation is conditional on precomputed calibration and interval eligibility, not a full pipeline forecast. */
+export function fitModel(iv) {
   const ok = iv.filter((r) => r.status === "ok");
   const X = ok.map((r) => [r.city_km / 100, r.hwy_km / 100, r.idle_h]);
   const y = ok.map((r) => r.litres);
@@ -188,35 +190,93 @@ function fitModel(iv) {
     const Pn = [0, 1, 2].map((i) => [0, 1, 2].map((j) => (i === j ? P0d[i] : 0) + Xs.reduce((a, r) => a + r[i] * r[j], 0) / sigma ** 2));
     const Sn = inv(Pn);
     const rhs = [0, 1, 2].map((i) => P0d[i] * m0[i] + Xs.reduce((a, r, k) => a + r[i] * ys[k], 0) / sigma ** 2);
-    return { mn: Sn.map((row) => row.reduce((a, v, j) => a + v * rhs[j], 0)), Sn };
+    return { mn: cholSolve(cholesky(Pn), rhs), Sn, precision: Pn };
   };
-  const logEvidence = (sigma) => {
-    const C = X.map((xi, i) => X.map((xj, j) => xi.reduce((a, v, k) => a + v * s0[k] ** 2 * xj[k], 0) + (i === j ? sigma ** 2 : 0)));
-    const r = y.map((v, i) => v - X[i].reduce((a, x, k) => a + x * m0[k], 0));
-    const L = cholesky(C);
-    const logdet = 2 * L.reduce((a, row, i) => a + Math.log(row[i]), 0);
-    const w = cholSolve(L, r);
-    return -0.5 * (r.reduce((a, v, i) => a + v * w[i], 0) + logdet + N * Math.log(2 * Math.PI));
+  // Matrix determinant lemma keeps noise tuning at a 3 × 3 factorization rather than an
+  // interval-count-sized covariance. This matters when each validation fold retunes sigma.
+  const logEvidence = (sigma, Xs, ys) => {
+    if (!ys.length) return 0;
+    const { mn, precision } = posterior(sigma, Xs, ys);
+    const L = cholesky(precision);
+    const logdet = 2 * ys.length * Math.log(sigma) + s0.reduce((a, sd) => a + 2 * Math.log(sd), 0)
+      + 2 * L.reduce((a, row, i) => a + Math.log(row[i]), 0);
+    // At the posterior mean this positive-sum form equals r' C^-1 r, avoiding cancellation.
+    const residual = ys.reduce((a, value, i) => a + (value - Xs[i].reduce((v, x, j) => v + x * mn[j], 0)) ** 2, 0) / sigma ** 2;
+    const priorPenalty = mn.reduce((a, value, j) => a + (value - m0[j]) ** 2 / s0[j] ** 2, 0);
+    return -0.5 * (residual + priorPenalty + logdet + ys.length * Math.log(2 * Math.PI));
   };
 
   const grid = linspace(1.0, 12.0, 111);
-  const ev = grid.map(logEvidence);
-  let best = 0;
-  ev.forEach((v, i) => { if (v > ev[best]) best = i; });
-  const sigma = grid[best];
+  const selectNoise = (Xs, ys) => {
+    const evidence = grid.map((sigma) => logEvidence(sigma, Xs, ys));
+    let best = 0;
+    evidence.forEach((value, i) => { if (value > evidence[best]) best = i; });
+    return { sigma: grid[best], evidence };
+  };
+  const { sigma, evidence: ev } = selectNoise(X, y);
   const { mn, Sn } = posterior(sigma, X, y);
   const sd = [0, 1, 2].map((i) => Math.sqrt(Sn[i][i]));
   const pred = X.map((xi) => xi.reduce((a, v, k) => a + v * mn[k], 0));
 
-  const loo = [], naive = [];
-  const kmAll = ok.map((r) => r.km);
-  for (let i = 0; i < N && N >= 2; i++) {
-    const keep = y.map((_, k) => k !== i);
-    const { mn: mk } = posterior(sigma, X.filter((_, k) => keep[k]), y.filter((_, k) => keep[k]));
-    loo.push(y[i] - X[i].reduce((a, v, k) => a + v * mk[k], 0));
-    const kmplK = sum(kmAll.filter((_, k) => keep[k])) / sum(y.filter((_, k) => keep[k]));
-    naive.push(y[i] - kmAll[i] / kmplK);
+  const minChronologicalTrain = 3;
+  const predict = (test, training) => {
+    const Xs = training.map((i) => X[i]), ys = training.map((i) => y[i]);
+    // The held-out litres are deliberately unavailable to BOTH coefficient and noise selection.
+    const { sigma: foldSigma } = selectNoise(Xs, ys);
+    const { mn: coefficients } = posterior(foldSigma, Xs, ys);
+    const predicted = X[test].reduce((value, x, j) => value + x * coefficients[j], 0);
+    const trainKM = training.reduce((total, i) => total + ok[i].km, 0);
+    const trainLitres = ys.reduce((total, value) => total + value, 0);
+    // The baseline is a pooled fuel rate (L/km), trained on exactly the same intervals.
+    const baseline = trainKM > 0 ? ok[test].km * trainLitres / trainKM : null;
+    return {
+      from: ok[test].from, to: ok[test].to, train_intervals: training.length,
+      sigma_l: foldSigma, actual_l: y[test], predicted_l: predicted, baseline_l: baseline,
+      error_l: predicted - y[test], baseline_error_l: baseline == null ? null : baseline - y[test],
+    };
+  };
+  const summarize = (method, minimum, predictions) => {
+    const baseline = predictions.filter((row) => row.baseline_error_l != null);
+    const mean = (rows, key, absolute = false) => rows.length
+      ? rows.reduce((total, row) => total + (absolute ? Math.abs(row[key]) : row[key]), 0) / rows.length : null;
+    return {
+      method, min_train_intervals: minimum, n_predictions: predictions.length,
+      baseline_n_predictions: baseline.length,
+      model_mae_l: mean(predictions, "error_l", true), baseline_mae_l: mean(baseline, "baseline_error_l", true),
+      model_bias_l: mean(predictions, "error_l"), baseline_bias_l: mean(baseline, "baseline_error_l"),
+      predictions,
+    };
+  };
+  const indices = ok.map((_, i) => i);
+  const looRows = N >= 2 ? indices.map((test) => predict(test, indices.filter((i) => i !== test))) : [];
+  const loo = summarize("nested_leave_one_interval_out", 1, looRows);
+
+  // Outputs currently retain calendar dates rather than fill timestamps. Zero-day intervals
+  // cannot be causally ordered from those dates and are excluded from chronological validation.
+  const validDay = (day) => typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day)
+    && Number.isFinite(Date.parse(day + "T00:00:00Z"))
+    && new Date(day + "T00:00:00Z").toISOString().slice(0, 10) === day;
+  const timed = indices.filter((i) => validDay(ok[i].from) && validDay(ok[i].to) && ok[i].from < ok[i].to)
+    .sort((a, b) => ok[a].to.localeCompare(ok[b].to) || ok[a].from.localeCompare(ok[b].from) || a - b);
+  const chronologicalRows = [];
+  for (const test of timed) {
+    // A training response must have been observed by the start of this held-out interval.
+    // This also excludes intervals that overlap the test, regardless of input ordering.
+    const training = timed.filter((i) => i !== test && ok[i].to <= ok[test].from);
+    if (training.length >= minChronologicalTrain) chronologicalRows.push(predict(test, training));
   }
+  const chronological = {
+    ...summarize("expanding_window_one_step", minChronologicalTrain, chronologicalRows),
+    eligible_intervals: timed.length,
+    excluded_date_intervals: N - timed.length,
+    insufficient_history_intervals: timed.length - chronologicalRows.length,
+  };
+  const validation = {
+    schema: 1, units: "litres", bias_definition: "prediction_minus_actual",
+    scope: "conditional_on_precomputed_intervals",
+    caveat: "Distance calibration, interval eligibility and city/highway splits are precomputed. This evaluates consumption fitting conditional on those inputs, not end-to-end forecasting or causal savings.",
+    loo, chronological,
+  };
 
   const pdf = (x, m, s) => Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
   const curves = {};
@@ -238,8 +298,10 @@ function fitModel(iv) {
     evidence: { sigma: grid.map((v) => npr(v, 2)), log_evidence: ev.map((v) => npr(v, 3)) },
     n_intervals: N,
     r2: N < 2 ? null : 1 - sum(y.map((v, i) => (v - pred[i]) ** 2)) / sum(y.map((v) => (v - ybar) ** 2)),
-    loo_mae: N < 2 ? null : sum(loo.map(Math.abs)) / N,
-    naive_loo_mae: N < 2 ? null : sum(naive.map(Math.abs)) / N,
+    // Legacy names are retained, now with noise selection nested correctly inside every fold.
+    loo_mae: loo.model_mae_l,
+    naive_loo_mae: loo.baseline_mae_l,
+    validation,
     kmpl_city: 100 / mn[0],
     kmpl_hwy: 100 / mn[1],
     curves,

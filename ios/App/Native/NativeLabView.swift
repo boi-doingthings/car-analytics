@@ -65,16 +65,40 @@ struct NativeLabView: View {
                     Text("Very little evidence. The model may largely reflect its starting assumptions.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
-                LabeledContent("Internal model error", value: "\(NativeFormat.number(model.leaveOneOutMAE, digits: 1)) L")
-                LabeledContent("Simple baseline error", value: "\(NativeFormat.number(model.baselineMAE, digits: 1)) L")
-                Text("These are internal leave-one-out diagnostics. Noise selection currently uses all intervals, so they are not independent validation. Use them to inspect the fit, not prove an improvement.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let validation = model.validation, validation.schema == 1, validation.units == "litres" {
+                    Divider()
+                    Text("Chronological interval check").font(.subheadline.weight(.semibold))
+                    Text("\(validation.chronological.predictions) intervals predicted using earlier completed intervals")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if validation.chronological.predictions > 0 {
+                        validationRow("Model error", value: validation.chronological.modelMAE)
+                        validationRow("Simple baseline error", value: validation.chronological.baselineMAE)
+                        validationRow("Signed model bias", value: validation.chronological.modelBias)
+                        Text("Error is mean absolute error in litres. Positive bias means predicted fuel exceeds the recorded amount.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Needs at least \(validation.chronological.minTrainIntervals) earlier completed fill intervals before the next interval can be tested.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    validationRow("Nested leave-one-out error", value: validation.loo.modelMAE)
+                    Text("Noise and coefficients are fitted again inside each validation fold. These checks assess the consumption fit for reconstructed intervals; distance calibration and fill reconstruction are not independently backtested. They do not prove a causal improvement.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("This saved analysis uses older validation diagnostics. Rebuild the archive to calculate nested and chronological checks.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
                 Text("The model needs usable full-to-full refuel intervals. You can explore recorded journeys while that history builds.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
         }
     }
+    private func validationRow(_ title: String, value: Double?) -> some View {
+        LabeledContent(title, value: value.map { "\(NativeFormat.number($0, digits: 1)) L" } ?? "Unavailable")
+            .font(.subheadline)
+    }
+
 }
 
 struct NativeFuelScenarioView: View {

@@ -28,13 +28,15 @@ open I20Logbook.xcodeproj
 
 Use the `I20Logbook` scheme. For a simulator, select an available iPhone and Run. For a physical phone, connect/pair it in Xcode, select it as the destination, choose your own team under Signing & Capabilities, and enable Developer Mode if the phone requests it. The app requires iOS 18 or later. Keep signing settings local; do not commit team identifiers, generated project files, credentials or provider configuration.
 
+For main-history use, follow [the real archive rollout](REAL_ARCHIVE_ROLLOUT.md). Archive writes now require per-archive consent; an update without existing consent opens in read-only mode.
+
 ## First physical-device check with synthetic data
 
 Copy the repository’s `ios/Tests/Fixtures/book` folder into a new test location in iCloud Drive using Finder. Rename only the copy to `i20_book`. Pick that copied folder in the app. These invented records include historical dates, so an empty recent 7-day briefing is expected; the historical journeys remain available under Trips.
 
 This build uses the existing application bundle identifier, so installing it updates the installed app rather than adding a second app. It can retain the previous archive bookmark and Keychain login.
 
-For this initial visual/offline check, keep the phone offline before the first launch, after the copied folder has downloaded. If an existing archive is restored, use Settings → Logbook folder → Re-pick folder to choose the test copy before adding or changing records. No Bluelink credentials are needed to rebuild and browse an existing archive. This also prevents an existing Keychain login from beginning an online collection into the test copy. The authoritative original archive stays outside the app and should remain unchanged by these test edits.
+For this initial visual/offline check, download the copied folder before going offline. The current build starts picked/restored archives read-only unless you have already authorized that archive. Leave automatic collection off during this check. If an existing archive is restored, use Settings → Logbook folder → Re-pick folder to choose the test copy before adding or changing records. No Bluelink credentials are needed to rebuild and browse an existing archive. Read-only mode also prevents an existing Keychain login from beginning online collection into the test copy. Enable Allow archive changes only on the test copy when testing saves. The authoritative original archive stays outside the app and should remain unchanged by these test edits.
 
 Check the following:
 

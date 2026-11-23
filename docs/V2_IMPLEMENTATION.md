@@ -22,7 +22,7 @@ A local hash binds a generation to its selected archive without storing a person
 
 Recorded distance and calibrated distance remain separate. Missing amounts and incomplete trip metrics stay unknown instead of silently becoming zero. Modelled trip costs and scenario outputs are explicitly labelled estimates. Route rendering breaks at invalid points, time gaps and implausible jumps.
 
-This increment does not refit the legacy fuel model or claim improved causal inference. Internal leave-one-out errors still use the legacy tuning procedure and are labelled accordingly. City/highway remains a whole-trip speed proxy. Unverified maintenance history remains explicitly unconfirmed.
+The consumption fit now retunes its noise parameter inside each leave-one-out fold and includes chronological expanding-window checks against a pooled-fuel-rate baseline. These diagnostics are conditional on the current reconstructed intervals: upstream odometer calibration and fill reconstruction are not independently backtested. City/highway remains a whole-trip speed proxy. Unverified maintenance history remains explicitly unconfirmed. No causal improvement is claimed.
 
 ## Validation
 
@@ -37,3 +37,15 @@ Home/Lock Screen widgets and App Group provisioning, incremental database indexi
 ### First increment test results
 
 The complete local simulator run passed 98 app unit tests and three UI tests, including the new archive-switch regressions and the existing refuel happy path. Shared JavaScript checks passed 31 public tests with 21 explicitly skipped private-history regressions. Desktop/migration checks passed eight tests. The publication policy scan and Gitleaks scan reported no findings. Physical-device acceptance and production-provider access remain untested in this increment.
+
+## Real archive and analytical trust increment
+
+Normal archive selection/restoration now defaults to read-only, with per-archive local write consent and separate opt-in automatic collection. The core writer rejects unauthorized writes/deletes, including held references after revocation. Canonical filenames and embedded IDs must match in native log loading and JavaScript analytics. Read-only logs have a static detail view rather than opening an edit form.
+
+A standard-library backup tool creates and verifies an independent checksum-backed copy, preserves mtimes needed by legacy finality rules, and restores only to a new folder outside Git. See [the real archive rollout](REAL_ARCHIVE_ROLLOUT.md) before choosing the main archive.
+
+Fuel diagnostics now report nested leave-one-out and chronological model/baseline MAE, signed bias and the number of held-out intervals. Insufficient history stays unavailable; future and overlapping intervals do not train an earlier prediction. The noise evidence calculation uses an equivalent small-matrix formulation so nested checks remain practical on-device. The legacy type-approval interval filter is unchanged and remains a separate modelling limitation.
+
+### Safety and validation checks
+
+The safety/validation increment passed 106 app unit tests and all four simulator UI tests, including explicit write consent, revocation, disabled automatic collection and byte-identical read-only archive rebuilding. Core storage/provider checks passed 60 tests with the opt-in live-login test skipped. JavaScript checks passed 44 public tests with 21 private-history skips. Backup/restore, migration and desktop checks passed 19 tests. A synthetic browser check also confirmed that unavailable validation errors render as unavailable instead of zero, with no page exceptions. No main archive or live vehicle account was used for these tests.

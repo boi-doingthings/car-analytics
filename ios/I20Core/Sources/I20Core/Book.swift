@@ -3,6 +3,8 @@ import Foundation
 public enum BookError: Error, Equatable {
     /// The book folder is missing or not a directory (iCloud signed out, folder deleted, stale bookmark).
     case unreachable
+    /// The selected archive has not been authorized for writes, or its authorization was revoked.
+    case readOnly
     /// A relative path that is absolute or contains `..`.
     case outsideRoot(String)
     /// The file is an iCloud placeholder that has not been downloaded (or does not exist).
@@ -11,17 +13,54 @@ public enum BookError: Error, Equatable {
     case downloadFailed(String, String)
 }
 
+/// Shared revocable permission for every writer holding a Book reference. Mutation is serialized
+/// with revocation: once setAllowed(false) returns, a coordinated write cannot begin or continue.
+public final class BookWriteAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var allowed: Bool
+
+    public init(allowed: Bool = true) { self.allowed = allowed }
+
+    public var canWrite: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return allowed
+    }
+
+    public func setAllowed(_ allowed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.allowed = allowed
+    }
+
+    fileprivate func withWritePermission<T>(_ mutation: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard allowed else { throw BookError.readOnly }
+        return try mutation()
+    }
+
+    fileprivate func requireWritePermission() throws {
+        try withWritePermission { }
+    }
+}
+
 /// The owner's `i20_book` folder. All paths are relative to `root` and validated to stay inside it.
 ///
-/// `Book` holds only an immutable `URL` and uses `FileManager.default` / `NSFileCoordinator` per call,
-/// so it is `Sendable` and can be shared across actors. Methods are synchronous (blocking file I/O) except
+/// `Book` holds an immutable `URL` and thread-safe write authorization and uses
+/// `FileManager.default` / `NSFileCoordinator` per call, so it can be shared across actors. Methods are synchronous (blocking file I/O) except
 /// `ensureDownloaded`; call them off the main actor for big trees.
 public final class Book: Sendable {
     public let root: URL
+    public let writeAuthorization: BookWriteAuthorization
+    public var canWrite: Bool { writeAuthorization.canWrite }
 
-    public init(root: URL) {
+    /// Core callers keep the original writable default. The app injects a read-only policy until
+    /// the owner explicitly authorizes this particular archive.
+    public init(root: URL, writeAuthorization: BookWriteAuthorization = BookWriteAuthorization()) {
         // Resolved once, so containment checks compare real paths (e.g. /var -> /private/var).
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        self.writeAuthorization = writeAuthorization
     }
 
     // MARK: paths
@@ -136,14 +175,20 @@ public final class Book: Sendable {
     /// Atomically writes a file (coordinated), creating parent folders. Throws `.unreachable` if the book
     /// folder itself is missing; never creates the root.
     public func writeAtomic(_ rel: String, _ data: Data) throws {
+        try writeAuthorization.requireWritePermission()
         let u = try checkedURL(rel)
         try requireRoot()
         var result: Result<Void, Error>?
         var coordError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: u, options: .forReplacing, error: &coordError) { url in
             result = Result {
-                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: url, options: .atomic)
+                try writeAuthorization.withWritePermission {
+                    // Authorization can change while NSFileCoordinator is waiting on another writer.
+                    try requireRoot()
+                    _ = try checkedURL(rel)
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: url, options: .atomic)
+                }
             }
         }
         if let coordError { throw coordError }
@@ -152,6 +197,7 @@ public final class Book: Sendable {
 
     /// Deletes a file (or its placeholder if it was never downloaded), coordinated.
     public func delete(_ rel: String) throws {
+        try writeAuthorization.requireWritePermission()
         let u = try checkedURL(rel)
         try requireRoot()
         let fm = FileManager.default
@@ -159,7 +205,13 @@ public final class Book: Sendable {
         var result: Result<Void, Error>?
         var coordError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: target, options: .forDeleting, error: &coordError) { url in
-            result = Result { try fm.removeItem(at: url) }
+            result = Result {
+                try writeAuthorization.withWritePermission {
+                    try requireRoot()
+                    _ = try checkedURL(rel)
+                    try fm.removeItem(at: url)
+                }
+            }
         }
         if let coordError { throw coordError }
         try result!.get()

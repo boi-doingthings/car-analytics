@@ -133,4 +133,15 @@ final class AnalyticsSnapshotTests: XCTestCase {
         XCTAssertEqual(AnalyticsDate.parse("2026-10-05T08:00:00"), AnalyticsDate.parse("2026-10-05T02:30:00Z"))
         XCTAssertNil(AnalyticsDate.parse("unavailable"))
     }
+    func test_validationContractKeepsUnavailableMetricsDistinctFromZero() throws {
+        let json = #"{"n_intervals":3,"validation":{"schema":1,"units":"litres","scope":"conditional_on_precomputed_intervals","loo":{"method":"nested_leave_one_interval_out","min_train_intervals":1,"n_predictions":3,"model_mae_l":1.25,"baseline_mae_l":2.5,"model_bias_l":-0.5},"chronological":{"method":"expanding_window_one_step","min_train_intervals":3,"n_predictions":0,"model_mae_l":null,"baseline_mae_l":null,"model_bias_l":null}}}"#
+        let model = try JSONDecoder().decode(FuelModel.self, from: Data(json.utf8))
+        XCTAssertEqual(model.validation?.loo.modelMAE, 1.25)
+        XCTAssertEqual(model.validation?.loo.modelBias, -0.5)
+        XCTAssertEqual(model.validation?.chronological.predictions, 0)
+        XCTAssertNil(model.validation?.chronological.modelMAE)
+        let old = try JSONDecoder().decode(FuelModel.self, from: Data("{}".utf8))
+        XCTAssertNil(old.validation)
+    }
+
 }

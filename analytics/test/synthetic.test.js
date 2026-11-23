@@ -59,6 +59,75 @@ test('synthetic archive: conflict copies cannot double count and future schemas 
   assert.ok(out.warnings.some(w => /schema/i.test(w)));
 });
 
+
+test('filename identity rejects plausible duplicate records without changing canonical analytics', () => {
+  const files = book();
+  const canonicalRefuel = Object.keys(files).find((key) => key.startsWith('log/refuels/'));
+  const canonicalService = Object.keys(files).find((key) => key.startsWith('log/services/'));
+  const maintenanceID = '00000000-0000-4000-8000-000000000090';
+  files[`log/maintenance/${maintenanceID}.json`] = {
+    schema: 1, id: maintenanceID, entered_at: '2026-10-05T08:00:00+05:30', date: '2026-10-05',
+    category: 'wash', cost: 100, note: 'Synthetic maintenance', reminder: '2026-10-10',
+  };
+  const baseline = runAll(files, options);
+  const canonicalContents = JSON.stringify(files[canonicalRefuel]);
+  const rogueRefuelID = '00000000-0000-4000-8000-000000000091';
+  const missingRefuelID = '00000000-0000-4000-8000-000000000092';
+  const rogueServiceID = '00000000-0000-4000-8000-000000000093';
+  const rogueMaintenanceID = '00000000-0000-4000-8000-000000000094';
+  // Every extra record looks otherwise valid. A copied embedded ID must not double count its original.
+  files[`log/refuels/${rogueRefuelID}.json`] = { ...files[canonicalRefuel], litres: 99, amount: 9900 };
+  files[`log/refuels/${missingRefuelID}.json`] = { ...files[canonicalRefuel] };
+  delete files[`log/refuels/${missingRefuelID}.json`].id;
+  files[`log/services/${rogueServiceID}.json`] = { ...files[canonicalService], total: 90000 };
+  files[`log/maintenance/${rogueMaintenanceID}.json`] = { ...files[`log/maintenance/${maintenanceID}.json`], cost: 90000 };
+  const out = runAll(files, options);
+  assert.deepEqual(out.errors, []);
+  assert.deepEqual(out.fuel, baseline.fuel);
+  assert.deepEqual(out.data.services, baseline.data.services);
+  assert.deepEqual(out.data.running_cost, baseline.data.running_cost);
+  assert.deepEqual(out.data.reminders, baseline.data.reminders);
+  assert.equal(JSON.stringify(files[canonicalRefuel]), canonicalContents, 'canonical source records remain unchanged');
+  assert.equal(out.warnings.length, 4);
+  for (const id of [rogueRefuelID, missingRefuelID, rogueServiceID, rogueMaintenanceID]) {
+    assert.ok(out.warnings.some((warning) => warning.startsWith(`skipping entry ${id}:`)),
+      'warnings use the canonical filename stem for native-reader deduplication');
+  }
+  assert.ok(out.warnings.find((warning) => warning.startsWith(`skipping entry ${rogueRefuelID}:`))
+    .includes(files[canonicalRefuel].id), 'mismatched embedded identity remains available for diagnosis');
+  assert.match(out.warnings.find((warning) => warning.startsWith(`skipping entry ${missingRefuelID}:`)), /missing/);
+});
+
+test('malformed embedded identity is diagnosed by filename while conflict names remain excluded', () => {
+  const files = book();
+  const filenameID = '00000000-0000-4000-8000-000000000095';
+  files[`log/refuels/${filenameID}.json`] = { schema: 1, id: 'hand-edited' };
+  files[`log/refuels/${filenameID} 2.json`] = { schema: 1, id: 'conflict-copy' };
+  files['log/refuels/------------------------------------.json'] = { schema: 1, id: '------------------------------------', date: '2026-10-05' };
+  const out = runAll(files, options);
+  assert.deepEqual(out.errors, []);
+  assert.equal(out.warnings.length, 1);
+  assert.ok(out.warnings[0].startsWith(`skipping entry ${filenameID}:`));
+  assert.match(out.warnings[0], /hand-edited/);
+  assert.equal(out.fuel.totals.fills, 3);
+});
+
+
+test('non-string identity objects cannot poison otherwise valid refuel analytics', () => {
+  const files = book();
+  const filenameID = '00000000-0000-4000-8000-000000000096';
+  const original = Object.keys(files).find((key) => key.startsWith('log/refuels/'));
+  // JSON can shadow toString with a scalar; diagnostics must not try to invoke it.
+  files[`log/refuels/${filenameID}.json`] = { ...files[original], id: { toString: 'not callable' } };
+  const out = runAll(files, options);
+  assert.deepEqual(out.errors, []);
+  assert.equal(out.fuel.totals.fills, 3);
+  assert.equal(out.warnings.length, 1);
+  assert.ok(out.warnings[0].startsWith(`skipping entry ${filenameID}:`));
+  assert.match(out.warnings[0], /invalid object/);
+  assert.ok(!out.warnings[0].includes('not callable'), 'do not dump invalid object contents into diagnostics');
+});
+
 test('bundled synthetic analytics agrees with source in a bare JavaScript context', async () => {
   const file = await buildBundle();
   const context = vm.createContext({});

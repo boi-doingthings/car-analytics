@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import I20Core
 
 /// Access to the owner's `i20_book` folder through a security-scoped bookmark.
@@ -15,6 +16,37 @@ final class FolderAccess: ObservableObject {
 
     private let defaults: UserDefaults
     private var scopedURL: URL?
+
+    /// Access consent is local to this app and this exact selected archive. A newly picked archive
+    /// always starts in browse mode unless the owner has previously authorized it on this device.
+    var writesAllowed: Bool { book?.canWrite ?? false }
+    var automaticSyncEnabled: Bool {
+        guard let book, book.canWrite else { return false }
+        return defaults.bool(forKey: Self.consentKey(for: book.root, capability: "automaticSync"))
+    }
+
+    private static func consentKey(for root: URL, capability: String) -> String {
+        let identity = root.standardizedFileURL.resolvingSymlinksInPath().absoluteString
+        let hash = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "i20.archive-consent.v1.\(hash).\(capability)"
+    }
+
+    func setWritesAllowed(_ allowed: Bool) {
+        guard let book else { return }
+        objectWillChange.send()
+        book.writeAuthorization.setAllowed(allowed)
+        defaults.set(allowed, forKey: Self.consentKey(for: book.root, capability: "writes"))
+        if !allowed {
+            defaults.set(false, forKey: Self.consentKey(for: book.root, capability: "automaticSync"))
+        }
+    }
+
+    func setAutomaticSyncEnabled(_ enabled: Bool) {
+        guard let book else { return }
+        objectWillChange.send()
+        defaults.set(enabled && book.canWrite,
+                     forKey: Self.consentKey(for: book.root, capability: "automaticSync"))
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -79,9 +111,18 @@ final class FolderAccess: ObservableObject {
         activate(url)
     }
 
-    private func activate(_ url: URL) {
+    /// Called only after bookmark/security-scope checks. Kept internal so synthetic tests can
+    /// exercise consent and revocation without reaching a real document provider.
+    func activate(_ url: URL) {
+        guard url.lastPathComponent == Self.folderName else {
+            error = Self.wrongFolderMessage
+            return
+        }
+        // Old forms and in-flight collectors retain the old Book: revoke that shared policy first.
+        book?.writeAuthorization.setAllowed(false)
         scopedURL?.stopAccessingSecurityScopedResource()
         scopedURL = url
-        book = Book(root: url)
+        let allowed = defaults.bool(forKey: Self.consentKey(for: url, capability: "writes"))
+        book = Book(root: url, writeAuthorization: BookWriteAuthorization(allowed: allowed))
     }
 }

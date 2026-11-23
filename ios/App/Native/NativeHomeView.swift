@@ -55,9 +55,10 @@ struct NativeHomeView: View {
                 }
             }
             .refreshable {
-                if Credentials.load() != nil || DebugHarness.active { sync.syncNow() } else { sync.rebuild() }
+                if folder.writesAllowed && (Credentials.load() != nil || DebugHarness.active) { sync.syncNow() } else { sync.rebuild() }
                 await sync.task?.value
             }
+            .onChange(of: folder.writesAllowed) { _, allowed in if !allowed { showRefuel = false } }
             .sheet(isPresented: $showRefuel) {
                 RefuelForm(model: RefuelFormModel(past: pastRefuels), book: folder.book) { sync.rebuild() }
             }
@@ -164,14 +165,16 @@ struct NativeHomeView: View {
 
     private var quickAdd: some View {
         Button {
+            guard folder.writesAllowed else { return }
             if let book = folder.book { pastRefuels = (try? loadAll(Refuel.self, from: book).entries) ?? [] }
             showRefuel = true
         } label: {
             Label("Log a refuel", systemImage: "plus.circle.fill")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 10)
         }
-        .buttonStyle(.borderedProminent).tint(NativeTheme.action).tint(NativeTheme.blue)
-        .disabled(folder.book == nil)
+        .buttonStyle(.borderedProminent).tint(NativeTheme.action)
+        .disabled(!folder.writesAllowed)
         .accessibilityIdentifier("quickRefuel")
+        .accessibilityHint(folder.writesAllowed ? "Add a refuel to this archive." : "Enable archive changes in Settings to add a refuel.")
     }
 }

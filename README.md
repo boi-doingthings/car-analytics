@@ -11,6 +11,7 @@ This is a sanitized baseline of the existing application, with a proposal for th
 - [Validation and publication notes](docs/BASELINE_VALIDATION.md)
 - [Data dictionary](DATA_DICTIONARY.md)
 - [Log record schemas](docs/entry-schemas.md)
+- [Using the main archive and verified backups](docs/REAL_ARCHIVE_ROLLOUT.md)
 
 ## Public development and tests
 

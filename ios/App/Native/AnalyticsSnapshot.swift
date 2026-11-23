@@ -383,7 +383,32 @@ struct FuelModel: Decodable, Sendable {
     let intervalCount: Int?
     let leaveOneOutMAE: Double?
     let baselineMAE: Double?
-    enum CodingKeys: String, CodingKey { case coef, sd; case intervalCount = "n_intervals", leaveOneOutMAE = "loo_mae", baselineMAE = "naive_loo_mae" }
+    let validation: FuelValidation?
+    enum CodingKeys: String, CodingKey { case coef, sd, validation; case intervalCount = "n_intervals", leaveOneOutMAE = "loo_mae", baselineMAE = "naive_loo_mae" }
+}
+/// Consumption-model diagnostics conditional on the currently reconstructed refuel intervals.
+struct FuelValidation: Decodable, Sendable {
+    let schema: Int
+    let units: String
+    let scope: String
+    let loo: FuelValidationResult
+    let chronological: FuelValidationResult
+}
+struct FuelValidationResult: Decodable, Sendable {
+    let method: String
+    let minTrainIntervals: Int
+    let predictions: Int
+    let modelMAE: Double?
+    let baselineMAE: Double?
+    let modelBias: Double?
+    enum CodingKeys: String, CodingKey {
+        case method
+        case minTrainIntervals = "min_train_intervals"
+        case predictions = "n_predictions"
+        case modelMAE = "model_mae_l"
+        case baselineMAE = "baseline_mae_l"
+        case modelBias = "model_bias_l"
+    }
 }
 struct FuelCoefficients: Decodable, Sendable {
     let cityL100: Double?

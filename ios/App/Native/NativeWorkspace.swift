@@ -35,16 +35,35 @@ struct NativeWorkspace: View {
         }
         .tint(NativeTheme.accent)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let loadError {
-                HStack(alignment: .top) {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text(loadError).font(.caption)
-                    Spacer(minLength: 0)
-                    Button("Retry") { loadRevision += 1 }
+            VStack(spacing: 0) {
+                if folder.book != nil && !folder.writesAllowed {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock").accessibilityHidden(true)
+                        Text("Read-only archive")
+                            .font(.caption.weight(.medium))
+                            .accessibilityIdentifier("archiveReadOnlyBanner")
+                        Spacer(minLength: 0)
+                        Button { showSettings = true } label: {
+                            Text("Manage access")
+                                .font(.caption.weight(.semibold))
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("manageArchiveAccess")
+                    }
+                    .padding(.horizontal, 16)
+                    .background(.regularMaterial)
                 }
-                .padding(12)
-                .background(.regularMaterial)
-                .accessibilityIdentifier("snapshotError")
+                if let loadError {
+                    HStack(alignment: .top) {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text(loadError).font(.caption)
+                        Spacer(minLength: 0)
+                        Button("Retry") { loadRevision += 1 }
+                    }
+                    .padding(12)
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("snapshotError")
+                }
             }
         }
         .sheet(isPresented: $showSettings, onDismiss: startRefresh) {
@@ -66,12 +85,13 @@ struct NativeWorkspace: View {
             else { sync.rebuild() }
         }
         .onChange(of: sync.finishedRuns) { _, _ in loadRevision += 1 }
+        .onChange(of: folder.automaticSyncEnabled) { _, enabled in if enabled { startRefresh() } }
         .onChange(of: scenePhase) { _, phase in if phase == .active { startRefresh() } }
     }
 
     private func startRefresh() {
-        if Credentials.load() == nil && !DebugHarness.active {
-            // An existing portable archive remains useful without a working online account.
+        if !folder.writesAllowed || !folder.automaticSyncEnabled || (Credentials.load() == nil && !DebugHarness.active) {
+            // Opening the app never opts an archive into writes or automatic collection.
             sync.rebuild()
         } else {
             sync.syncIfStale()
