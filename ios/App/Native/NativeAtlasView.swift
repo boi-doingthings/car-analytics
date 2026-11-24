@@ -20,9 +20,13 @@ struct NativeAtlasView: View {
     @State private var loadedSelection: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @State private var progress = 0.0
+    @State private var progress = 0
+    @State private var expanded = false
+    @State private var draftRange: ClosedRange<Date> = Date.distantPast...Date.distantPast
+    @State private var draftAllHistory = true
     @State private var playing = false
     @State private var camera: MapCameraPosition = .automatic
+    @State private var lastCamera: MapCamera?
     @State private var showFilters = false
     @State private var showDetails = false
     @State private var showPlaces = false
@@ -49,7 +53,7 @@ struct NativeAtlasView: View {
     }
     private var selectedFrom: Date { max(bounds.lowerBound, min(bounds.upperBound, fromDate ?? bounds.lowerBound)) }
     private var selectedThrough: Date { max(selectedFrom, min(bounds.upperBound, throughDate ?? bounds.upperBound)) }
-    private var visibleCount: Int { min(data.trips.count, max(0, Int(progress.rounded(.down)))) }
+    private var visibleCount: Int { min(data.trips.count, max(0, progress)) }
     private var cursorTrip: NativeTrip? { visibleCount > 0 ? data.trips[visibleCount - 1] : nil }
     private var selectionKey: String {
         "\(snapshot?.generationID ?? "none")|\(selectedFrom.timeIntervalSince1970)|\(selectedThrough.timeIntervalSince1970)"
@@ -58,26 +62,32 @@ struct NativeAtlasView: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-                // Reserve room for the full cursor card, including floating tab chrome.
-                // Read-only notices reduce this height even on a regular portrait phone.
-                let scrolling = dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact || geometry.size.height < 780
-                if scrolling {
-                    ScrollView {
-                        atlasContent(scrolling: true).padding(.bottom, 88)
+                let mapHeight = verticalSizeClass == .compact
+                    ? max(180, min(300, geometry.size.height - 32))
+                    : max(340, min(500, geometry.size.height * 0.65))
+                if expanded && !dynamicTypeSize.isAccessibilitySize && verticalSizeClass != .compact {
+                    VStack(spacing: 12) {
+                        atlasMap(height: nil)
+                        playbackControls
                     }
+                    .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
                 } else {
-                    atlasContent(scrolling: false)
+                    ScrollView {
+                        atlasContent(mapHeight: mapHeight)
+                            .padding(.bottom, 88)
+                    }
                 }
             }
             .background(NativeTheme.background)
-            .navigationTitle("Atlas").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(expanded ? "Atlas · \(mode.rawValue)" : "Atlas").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { playing = false; onSettings() } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("Settings").accessibilityIdentifier("openSettings")
                 }
             }
-            .sheet(isPresented: $showFilters) { filters }
+            .toolbar(expanded && !dynamicTypeSize.isAccessibilitySize && verticalSizeClass != .compact ? .hidden : .visible, for: .tabBar)
+            .sheet(isPresented: $showFilters, onDismiss: applyFilters) { filters }
             .sheet(isPresented: $showDetails) { mapDetails }
             .task(id: "\(selectionKey)|\(visible && phase == .active)") {
                 guard visible && phase == .active else { building = false; return }
@@ -86,11 +96,12 @@ struct NativeAtlasView: View {
             }
             .task(id: playing) {
                 guard playing else { return }
-                let step = max(0.02, Double(data.trips.count) / 50)
+                let step = NativeAtlasSelection.playbackStep(tripCount: data.trips.count)
+                let interval = NativeAtlasSelection.playbackIntervalMS(tripCount: data.trips.count)
                 while !Task.isCancelled {
-                    do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                    do { try await Task.sleep(for: .milliseconds(interval)) } catch { return }
                     guard !Task.isCancelled else { return }
-                    progress = min(Double(data.trips.count), progress + step)
+                    progress = min(data.trips.count, progress + step)
                     if visibleCount >= data.trips.count { playing = false; return }
                 }
             }
@@ -100,7 +111,7 @@ struct NativeAtlasView: View {
         }
     }
 
-    private func atlasContent(scrolling: Bool) -> some View {
+    private func atlasContent(mapHeight: CGFloat) -> some View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -111,7 +122,12 @@ struct NativeAtlasView: View {
                             .accessibilityIdentifier("atlasRouteCount")
                     }
                     Spacer(minLength: 0)
-                    Button { playing = false; showFilters = true } label: {
+                    Button {
+                        playing = false
+                        draftRange = selectedFrom...selectedThrough
+                        draftAllHistory = fromDate == nil && throughDate == nil
+                        showFilters = true
+                    } label: {
                         Image(systemName: "line.3.horizontal.decrease").frame(minWidth: 44, minHeight: 44)
                     }.accessibilityLabel("Atlas date range and layers").accessibilityIdentifier("atlasFilters")
                 }
@@ -120,7 +136,7 @@ struct NativeAtlasView: View {
                 }
                 .pickerStyle(.segmented).accessibilityIdentifier("atlasMode")
                 .onChange(of: mode) { _, _ in playing = false }
-                atlasMap(scrolling: scrolling)
+                atlasMap(height: mapHeight)
                 playbackControls
                 legend
                 if let snapshot, let trip = cursorTrip {
@@ -140,10 +156,10 @@ struct NativeAtlasView: View {
                     .simultaneousGesture(TapGesture().onEnded { playing = false })
                 }
             }
-            .padding(.horizontal, 16).padding(.bottom, 12)
+            .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
     }
 
-    private func atlasMap(scrolling: Bool) -> some View {
+    private func atlasMap(height: CGFloat?) -> some View {
         Map(position: $camera) {
             if mode == .density {
                 ForEach(data.density) { cell in
@@ -156,7 +172,7 @@ struct NativeAtlasView: View {
                 }
             } else {
                 ForEach((mode == .speed ? data.speedLines : data.lines).filter { $0.tripIndex < visibleCount }) { line in
-                    MapPolyline(coordinates: line.coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) })
+                    MapPolyline(line.polyline)
                         .stroke(lineColor(line).opacity(mode == .routes ? 0.48 : 0.85), lineWidth: mode == .routes ? 2 : 3)
                 }
             }
@@ -187,9 +203,10 @@ struct NativeAtlasView: View {
                 }
             }
         }
+        .onMapCameraChange(frequency: .onEnd) { context in lastCamera = context.camera }
         .mapStyle(.standard(elevation: .flat))
         .mapControls { MapCompass(); MapScaleView() }
-        .frame(minHeight: scrolling ? 260 : 160, maxHeight: scrolling ? 260 : .infinity)
+        .frame(minHeight: height ?? 160, maxHeight: height ?? .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .overlay {
             if building {
@@ -202,6 +219,23 @@ struct NativeAtlasView: View {
                 }.padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)).padding()
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if !dynamicTypeSize.isAccessibilitySize && verticalSizeClass != .compact {
+                Button {
+                    playing = false
+                    if camera.positionedByUser, let lastCamera { camera = .camera(lastCamera) }
+                    expanded.toggle()
+                } label: {
+                    Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .frame(width: 44, height: 44)
+                        .background(.regularMaterial, in: Circle())
+                }
+                .accessibilityLabel(expanded ? "Collapse map" : "Expand map")
+                .accessibilityIdentifier("atlasExpandMap")
+                .padding(12)
+            }
+        }
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Historical map, \(visibleCount) of \(data.trips.count) archived drives at the cursor")
         .accessibilityIdentifier("atlasMap")
     }
@@ -210,11 +244,11 @@ struct NativeAtlasView: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Button {
-                    if visibleCount >= data.trips.count { progress = min(1, Double(data.trips.count)) }
+                    if visibleCount >= data.trips.count { progress = min(1, data.trips.count) }
                     playing.toggle()
                 } label: { Image(systemName: playing ? "pause.fill" : "play.fill").frame(minWidth: 44, minHeight: 44) }
                 .buttonStyle(.borderedProminent).tint(NativeTheme.action)
-                .disabled(data.trips.isEmpty || building || reduceMotion)
+                .disabled(data.trips.count < 2 || building || reduceMotion)
                 .accessibilityLabel(playing ? "Pause time-lapse" : "Play time-lapse")
                 .accessibilityIdentifier("atlasReplayPlay")
                 Button {
@@ -224,7 +258,7 @@ struct NativeAtlasView: View {
                 .disabled(visibleCount == 0).accessibilityLabel("Previous archived drive")
                 Button {
                     playing = false
-                    progress = min(Double(data.trips.count), progress + 1)
+                    progress = min(data.trips.count, progress + 1)
                 } label: { Image(systemName: "forward.end.fill").frame(minWidth: 40, minHeight: 44) }
                 .disabled(visibleCount >= data.trips.count).accessibilityLabel("Next archived drive")
                 Spacer(minLength: 0)
@@ -232,7 +266,7 @@ struct NativeAtlasView: View {
                     Label("Fit", systemImage: "arrow.up.left.and.arrow.down.right").frame(minHeight: 44)
                 }.accessibilityIdentifier("atlasFit")
             }
-            Slider(value: $progress, in: 0...max(1, Double(data.trips.count)), step: 1, onEditingChanged: { editing in
+            Slider(value: Binding(get: { Double(progress) }, set: { progress = min(data.trips.count, max(0, Int($0.rounded()))) }), in: 0...max(1, Double(data.trips.count)), step: 1, onEditingChanged: { editing in
                 if editing { playing = false }
             })
             .disabled(data.trips.isEmpty || building)
@@ -244,12 +278,23 @@ struct NativeAtlasView: View {
     }
 
     private var legend: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             switch mode {
-            case .routes: Text("Archived route traces; darker overlaps show repeated coverage.")
-            case .speed: Text("GPS-derived speed: blue <20 · teal 20–40 · amber 40–60 · orange 60+ km/h. Grey = unknown.")
-            case .departure: Text("Departure in IST: purple 00–06 · blue 06–12 · teal 12–18 · amber 18–24.")
-            case .density: Text("Adaptive grid: distinct archived trips per area, not live traffic. Darker cells mean more visits.")
+            case .routes:
+                Text("Archived route traces; darker overlaps show repeated coverage.")
+            case .speed:
+                Text("GPS-derived speed · km/h")
+                legendChips([("<20", .blue), ("20–40", .teal), ("40–60", NativeTheme.amber), ("60+", .orange), ("Unknown", .gray)])
+            case .departure:
+                Text("Departure hour · IST")
+                legendChips([("00–06", NativeTheme.purple), ("06–12", NativeTheme.blue), ("12–18", NativeTheme.teal), ("18–24", NativeTheme.amber)])
+            case .density:
+                Text("Distinct archived drives per area · stronger tint means more visits")
+                legendChips([("1–4 drives", NativeTheme.blue), ("5+ drives", NativeTheme.amber)])
+            }
+            if showPlaces || showHotspots || showParked {
+                Text("Reference layers: places and slow areas use all history; parking uses the latest saved reading.")
+                    .accessibilityIdentifier("atlasReferenceScope")
             }
             Button {
                 playing = false
@@ -258,35 +303,48 @@ struct NativeAtlasView: View {
                 Label(data.sourceLineCount > data.lines.count || data.sourceSpeedLineCount > data.speedLines.count
                       ? "Display sampling and map details" : "Map data and quality", systemImage: "info.circle")
             }
-            .frame(minHeight: 30).accessibilityIdentifier("atlasMapDetails")
+            .frame(minHeight: 44).accessibilityIdentifier("atlasMapDetails")
             if reduceMotion { Text("Reduce Motion: use the scrubber and step buttons.") }
         }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func legendChips(_ items: [(String, Color)]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), alignment: .leading)], alignment: .leading, spacing: 8) {
+            ForEach(items, id: \.0) { label, color in
+                HStack(spacing: 6) {
+                    Circle().fill(color).frame(width: 9, height: 9).accessibilityHidden(true)
+                    Text(label)
+                }
+            }
+        }
     }
 
     private var filters: some View {
         NavigationStack {
             Form {
                 Section("Archive date range · IST") {
-                    DatePicker("From", selection: Binding(get: { selectedFrom }, set: { value in
-                        playing = false; fromDate = value
-                        if value > selectedThrough { throughDate = value }
+                    DatePicker("From", selection: Binding(get: { draftRange.lowerBound }, set: { value in
+                        draftAllHistory = false
+                        draftRange = NativeAtlasSelection.movingStart(to: value, in: draftRange, bounds: bounds)
                     }), in: bounds, displayedComponents: .date)
                     .accessibilityIdentifier("atlasFromDate")
-                    DatePicker("Through", selection: Binding(get: { selectedThrough }, set: { value in
-                        playing = false; throughDate = value
-                        if value < selectedFrom { fromDate = value }
+                    DatePicker("Through", selection: Binding(get: { draftRange.upperBound }, set: { value in
+                        draftAllHistory = false
+                        draftRange = NativeAtlasSelection.movingEnd(to: value, in: draftRange, bounds: bounds)
                     }), in: bounds, displayedComponents: .date)
                     .accessibilityIdentifier("atlasThroughDate")
-                    Button("All history") { fromDate = nil; throughDate = nil }
+                    Button("All history") { draftAllHistory = true; draftRange = bounds }
                         .accessibilityIdentifier("atlasAllHistory")
+                    Text("The date range is applied when you close these filters.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Section("Optional reference layers") {
+                Section("Reference layers · independent of playback") {
                     Toggle("Inferred places", isOn: $showPlaces)
                     Toggle("Historical slow areas", isOn: $showHotspots)
                     Toggle("Last reported parking", isOn: $showParked)
                 }
                 Section {
-                    Text("Place labels are inferred from archived endpoints. Slow areas are historical GPS-derived summaries. Parking is a past vehicle reading, not a live location.")
+                    Text("Places and slow areas summarize all archived history, independently of the selected dates and playback position. Parking uses the latest saved vehicle reading; it is not a live location.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if let asOf = snapshot?.overview.status?.asOf { Text("Vehicle reading: \(NativeFormat.date(asOf, includeTime: true)) IST").font(.footnote) }
                 }
@@ -325,6 +383,15 @@ struct NativeAtlasView: View {
         }
     }
 
+    private func applyFilters() {
+        if draftAllHistory { fromDate = nil; throughDate = nil }
+        else {
+            let range = NativeAtlasSelection.clamped(draftRange, to: bounds)
+            fromDate = range.lowerBound
+            throughDate = range.upperBound
+        }
+    }
+
     private func rebuildProjection() async {
         playing = false
         building = true
@@ -336,7 +403,7 @@ struct NativeAtlasView: View {
         let projected = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
         guard !Task.isCancelled else { return }
         data = projected
-        progress = Double(projected.trips.count)
+        progress = projected.trips.count
         building = false
         loadedSelection = capturedSelection
         if let focusHotspot, let point = coordinate(focusHotspot.latitude, focusHotspot.longitude) {

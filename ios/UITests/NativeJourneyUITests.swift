@@ -41,7 +41,7 @@ final class NativeJourneyUITests: XCTestCase {
             app.coordinate(withNormalizedOffset: start).press(forDuration: 0.05,
                 thenDragTo: app.coordinate(withNormalizedOffset: end))
         }
-        XCTAssertTrue(safelyVisible(), "Control frame \(element.frame); usable viewport \(viewport). \(app.debugDescription)")
+        XCTAssertTrue(safelyVisible(), "Control frame \(element.exists ? element.frame : .zero); usable viewport \(viewport). \(app.debugDescription)")
     }
 
     func test_calendarHasMonthlyDistanceAndRecordedDayJourneys() {
@@ -89,20 +89,64 @@ final class NativeJourneyUITests: XCTestCase {
         let enabled = NSPredicate(format: "enabled == true")
         expectation(for: enabled, evaluatedWith: play)
         waitForExpectations(timeout: 15)
-        app.sliders["atlasScrubber"].adjust(toNormalizedSliderPosition: 0.5)
+
+        let map = app.descendants(matching: .any).matching(identifier: "atlasMap").firstMatch
+        XCTAssertTrue(map.exists)
+        let normalMapHeight = map.frame.height
+        XCTAssertGreaterThanOrEqual(normalMapHeight, 340, "Atlas needs a useful map before expansion")
+        let expand = app.buttons["atlasExpandMap"]
+        reveal(expand, in: app)
+        let normalScreen = XCTAttachment(screenshot: app.screenshot())
+        normalScreen.name = "Atlas normal map · synthetic archive"
+        normalScreen.lifetime = .keepAlways
+        add(normalScreen)
+        expand.tap()
+        let expanded = NSPredicate { _, _ in
+            map.exists && map.frame.height >= normalMapHeight + 100 &&
+                (!app.tabBars.buttons["Trips"].exists || !app.tabBars.buttons["Trips"].isHittable)
+        }
+        expectation(for: expanded, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        XCTAssertEqual(expand.label, "Collapse map")
+        XCTAssertTrue(expand.isHittable)
+        let expandedScreen = XCTAttachment(screenshot: app.screenshot())
+        expandedScreen.name = "Atlas expanded map · synthetic archive"
+        expandedScreen.lifetime = .keepAlways
+        add(expandedScreen)
+        expand.tap()
+        let collapsed = NSPredicate { _, _ in
+            map.exists && abs(map.frame.height - normalMapHeight) < 2 &&
+                app.tabBars.buttons["Trips"].isHittable
+        }
+        expectation(for: collapsed, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+
+        let scrubber = app.sliders["atlasScrubber"]
+        reveal(scrubber, in: app)
+        scrubber.adjust(toNormalizedSliderPosition: 0.5)
         XCTAssertTrue(app.staticTexts["atlasReplayDate"].exists)
-        app.segmentedControls["atlasMode"].buttons["Density"].tap()
+        let mode = app.segmentedControls["atlasMode"]
+        reveal(mode, in: app)
+        mode.buttons["Density"].tap()
+        reveal(play, in: app)
         play.tap()
         XCTAssertEqual(play.label, "Pause time-lapse")
         app.tabBars.buttons["Trips"].tap()
         app.tabBars.buttons["Atlas"].tap()
         XCTAssertEqual(play.label, "Play time-lapse")
-        app.buttons["atlasFilters"].tap()
+        let filters = app.buttons["atlasFilters"]
+        reveal(filters, in: app)
+        filters.tap()
         XCTAssertTrue(app.navigationBars["Atlas filters"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["atlasFromDate"].exists)
         app.buttons["atlasAllHistory"].tap()
+        let places = app.switches["Inferred places"]
+        XCTAssertEqual(places.value as? String, "0")
+        places.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(places.value as? String, "1")
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["atlasMapDetails"].exists)
+        reveal(app.buttons["atlasMapDetails"], in: app)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Reference layers: places")).firstMatch.exists)
         let cursor = app.buttons["atlasCursorTrip"]
         reveal(cursor, in: app)
         cursor.tap()

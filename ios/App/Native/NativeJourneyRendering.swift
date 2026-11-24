@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 
 /// Rendering-only projections. Original records are never changed or resampled into fake observations.
 struct NativeReplaySample: Identifiable, Sendable {
@@ -71,6 +72,31 @@ struct NativeAtlasLine: Identifiable, Sendable {
     let coordinates: [RouteCoordinate]
     let speedBand: Int?
     let departureBand: Int
+    private let geometry: NativeAtlasGeometry
+
+    /// Reuses the same MapKit geometry on every render; callers must not mutate its metadata.
+    var polyline: MKPolyline { geometry.polyline }
+
+    init(id: String, tripIndex: Int, coordinates: [RouteCoordinate], speedBand: Int?, departureBand: Int) {
+        self.id = id
+        self.tripIndex = tripIndex
+        self.coordinates = coordinates
+        self.speedBand = speedBand
+        self.departureBand = departureBand
+        geometry = NativeAtlasGeometry(coordinates: coordinates)
+    }
+}
+
+/// MapKit does not declare MKPolyline Sendable. Its geometry is copied at construction and has
+/// no mutation API. We construct it before publication and never mutate title/subtitle afterward;
+/// the unchecked boundary is limited to this immutable, privately retained geometry cache.
+private struct NativeAtlasGeometry: @unchecked Sendable {
+    let polyline: MKPolyline
+
+    init(coordinates: [RouteCoordinate]) {
+        let points = coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        polyline = MKPolyline(coordinates: points, count: points.count)
+    }
 }
 
 struct NativeAtlasCell: Identifiable, Sendable {
@@ -141,7 +167,7 @@ struct NativeAtlasRenderData: Sendable {
             for (segmentIndex, points) in trip.routeSegments.enumerated() where points.count >= 2 {
                 let prefix = "\(trip.id)-\(segmentIndex)"
                 let displayed = simplify(points, limit: 160)
-                lines.append(NativeAtlasLine(id: prefix, tripIndex: tripIndex, coordinates: displayed,
+                lines.append(AtlasLineCandidate(id: prefix, tripIndex: tripIndex, coordinates: displayed,
                                              speedBand: nil, departureBand: timeBand))
                 var run: [RouteCoordinate] = [], previousBand: Int?, runIndex = 0
                 for point in displayed {
@@ -149,7 +175,7 @@ struct NativeAtlasRenderData: Sendable {
                     if !run.isEmpty, band != previousBand {
                         run.append(point)
                         if run.count >= 2 {
-                            speedLines.append(NativeAtlasLine(id: "\(prefix)-s\(runIndex)", tripIndex: tripIndex,
+                            speedLines.append(AtlasLineCandidate(id: "\(prefix)-s\(runIndex)", tripIndex: tripIndex,
                                                               coordinates: run, speedBand: previousBand,
                                                               departureBand: timeBand))
                             runIndex += 1
@@ -159,7 +185,7 @@ struct NativeAtlasRenderData: Sendable {
                     previousBand = band
                 }
                 if run.count >= 2 {
-                    speedLines.append(NativeAtlasLine(id: "\(prefix)-s\(runIndex)", tripIndex: tripIndex,
+                    speedLines.append(AtlasLineCandidate(id: "\(prefix)-s\(runIndex)", tripIndex: tripIndex,
                                                       coordinates: run, speedBand: previousBand,
                                                       departureBand: timeBand))
                 }
@@ -181,8 +207,8 @@ struct NativeAtlasRenderData: Sendable {
                                    tripIndices: cell.visits)
         }
         return NativeAtlasRenderData(trips: trips,
-                                      lines: lines.values.sorted { ($0.tripIndex, $0.id) < ($1.tripIndex, $1.id) },
-                                      speedLines: speedLines.values.sorted { ($0.tripIndex, $0.id) < ($1.tripIndex, $1.id) },
+                                      lines: lines.values.sorted { ($0.tripIndex, $0.id) < ($1.tripIndex, $1.id) }.map(\.renderLine),
+                                      speedLines: speedLines.values.sorted { ($0.tripIndex, $0.id) < ($1.tripIndex, $1.id) }.map(\.renderLine),
                                       density: density, routedTripCount: routed, pointCount: pointCount,
                                       sourceLineCount: lines.seen, sourceSpeedLineCount: speedLines.seen,
                                       densityCellSizeDegrees: grid,
@@ -196,13 +222,27 @@ struct NativeAtlasRenderData: Sendable {
     }
 
     /// Deterministic reservoir: global overlay and vertex costs stay bounded without favouring recent trips.
+    /// Candidates defer MapKit allocation until after the global budgets select retained geometry.
+    private struct AtlasLineCandidate {
+        let id: String
+        let tripIndex: Int
+        let coordinates: [RouteCoordinate]
+        let speedBand: Int?
+        let departureBand: Int
+
+        var renderLine: NativeAtlasLine {
+            NativeAtlasLine(id: id, tripIndex: tripIndex, coordinates: coordinates,
+                            speedBand: speedBand, departureBand: departureBand)
+        }
+    }
+
     private struct OverlayBudget {
         let limit: Int
-        var values: [NativeAtlasLine] = []
+        var values: [AtlasLineCandidate] = []
         var seen = 0
         private var random: UInt64 = 7
         init(limit: Int) { self.limit = limit }
-        mutating func append(_ line: NativeAtlasLine) {
+        mutating func append(_ line: AtlasLineCandidate) {
             seen += 1
             if values.count < limit { values.append(line); return }
             random = random &* 6_364_136_223_846_793_005 &+ 1

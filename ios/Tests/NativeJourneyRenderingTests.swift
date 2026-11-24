@@ -1,4 +1,5 @@
 import XCTest
+import MapKit
 @testable import I20Logbook
 
 final class NativeJourneyRenderingTests: XCTestCase {
@@ -71,5 +72,30 @@ final class NativeJourneyRenderingTests: XCTestCase {
         XCTAssertEqual(atlas.routedTripCount, 0)
         XCTAssertTrue(atlas.lines.isEmpty)
         XCTAssertTrue(atlas.density.isEmpty)
+    }
+
+    func test_retainedGeometryIsPreparedOffMainAndReusedWithoutChangingSimplification() async throws {
+        var route: [[Double?]] = (0..<250).map { [12, 77 + Double($0) * 0.00001, 30, Double($0)] }
+        route.append([nil, nil, nil, nil])
+        route += [[12.01, 77, 60, 300], [12.01, 77.001, 60, 310]]
+        let source = trip(route: route)
+        let result = await Task.detached { NativeAtlasRenderData.build(trips: [source]) }.value
+        XCTAssertEqual(result.lines.count, 2, "An invalid source point must still break geometry")
+        XCTAssertEqual(result.lines[0].coordinates.count, 160)
+        XCTAssertEqual(result.lines[0].coordinates.first?.id, 0)
+        XCTAssertEqual(result.lines[0].coordinates.last?.id, 249)
+        for line in result.lines + result.speedLines {
+            let geometry = line.polyline
+            XCTAssertTrue(geometry === line.polyline, "Rendering must reuse the cached MapKit object")
+            let copiedLine = line
+            XCTAssertTrue(geometry === copiedLine.polyline, "Value copies must retain the same geometry")
+            XCTAssertEqual(geometry.pointCount, line.coordinates.count)
+            var coordinates = Array(repeating: CLLocationCoordinate2D(), count: geometry.pointCount)
+            geometry.getCoordinates(&coordinates, range: NSRange(location: 0, length: geometry.pointCount))
+            for (actual, expected) in zip(coordinates, line.coordinates) {
+                XCTAssertEqual(actual.latitude, expected.latitude, accuracy: 1e-9)
+                XCTAssertEqual(actual.longitude, expected.longitude, accuracy: 1e-9)
+            }
+        }
     }
 }
