@@ -1,4 +1,4 @@
-# Test the native v2 increment
+# Test the native v2 app
 
 The development branch is `codex/v2-native-foundation`. The stable baseline remains on `main`; the native changes are reviewed through the draft pull request.
 
@@ -43,11 +43,15 @@ For this initial visual/offline check, download the copied folder before going o
 Check the following:
 
 1. Today fits comfortably, larger text remains readable, and switching between 7/30/90 days is clear. Old vehicle readings must be labelled historical.
-2. Trips can be searched by place/date, filtered, opened and navigated back from. Route geometry should remain viewable when map tiles are unavailable.
-3. Garage opens the editable logbook. Add a clearly named test refuel with a typed odometer, edit it and delete it. Confirm that only the copied archive changed.
-4. Lab opens the scenario calculator and Data quality. Hypothetical inputs, estimated values and unknown values should be distinguishable.
-5. Pull to refresh and opening Settings should not freeze scrolling or strand the interface in a spinner. After changing a record, the next complete analysis should reflect it. After the first analysis, repeatedly visit Today and Lab → Detailed analysis, then background and reopen the app. With unchanged data on the same day, these passive visits should check the cache without repeatedly recalculating. An explicit refresh should complete once. Keep Allow archive changes off for this browsing check.
-6. Try light/dark appearance, your normal Dynamic Type size, one larger text setting, and one-handed use with the keyboard visible.
+2. Trips shows the odometer and archive overview. Open Driving activity, choose a month, select a calendar day and open a journey. Search/filter the trip list, inspect provider speed/events and scrub the GPS-derived speed/acceleration replay. Invalid gaps must stay disconnected. Map geometry should remain viewable when tiles are unavailable.
+3. Atlas is its own tab. Try routes, speed, departure-time and density layers; adjust the date range, fit the map, play/pause and scrub the time lapse. Switch tabs or background the app while playing: it must stop. Check the sampling disclosure on larger histories. Reduce Motion keeps manual scrubbing available.
+4. Garage has direct service history, maintenance plan, reminders and read-only invoice details/attachments. Browse these with changes disabled. Enable changes only on the copied archive to add/edit/delete a clearly named test refuel. Verify that only the copy changed.
+5. Lab exposes native Patterns and Performance studies. Select chart values, change the history window and follow a plotted/outlier journey back to the shared debrief. Fitted models and pooled reference diagrams explicitly keep their saved training window. Unavailable studies on the small fixture should explain the missing support.
+6. Lab → Fuel & scenarios opens the existing hypothetical controls by default. Switch to History for fill/price/brand exploration, calibration, interval economy and gaps, model evidence/validation, cash-versus-consumption, fuel mix and tank/gauge reconstruction. Switch back to Scenario. Recorded, reconstructed and hypothetical quantities must remain distinguishable.
+7. Data quality still lists vehicle observation, collection and analysis times separately. Repeated visits to Today, Trips, Atlas and Lab with unchanged inputs on the same day must not trigger repeated analytical rebuilds. Explicit refresh should complete once; saved edits should publish new values even when trip count stays unchanged. Keep Allow archive changes off for the browsing check.
+8. Try light/dark appearance, your normal Dynamic Type size, one larger text setting, and one-handed use with the keyboard visible. Check Atlas controls remain reachable at larger text sizes.
+
+The normal phone navigation no longer opens the desktop Detailed analysis page. Its section-by-section native destinations are documented in [the migration plan](NATIVE_ANALYTICS_MIGRATION.md). The original web files remain the desktop viewer. The new chart cards are in-app tools; Home/Lock Screen system widgets remain a later increment.
 
 Report the phone model/iOS version, screen/action and observed behaviour. Screenshots are helpful if they contain only synthetic records. Do not attach real routes, credentials, personal folder paths or vehicle identifiers to a public issue.
 

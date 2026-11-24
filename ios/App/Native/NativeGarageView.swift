@@ -1,4 +1,5 @@
 import SwiftUI
+import I20Core
 
 struct NativeGarageView: View {
     let snapshot: AnalyticsSnapshot?
@@ -21,24 +22,17 @@ struct NativeGarageView: View {
                     Text("Keep the history. Understand the cost.")
                         .font(.subheadline).foregroundStyle(.secondary)
                     quickActions
-                    cashCard
+                    recordsCard
                     if let error = store.loadError {
                         NativeNotice(symbol: "exclamationmark.triangle", title: "Logbook unavailable", message: error)
                     }
                     if store.skipped > 0 {
                         NativeNotice(symbol: "doc.badge.ellipsis", title: "Records need review", message: "\(store.skipped) records couldn’t be read. Open Settings for the latest sync issues.")
                     }
-                    fuelCard
                     maintenanceCard
-                    NativeCard(title: "Your logbook", symbol: "book.closed") {
-                        Text("Refuels, invoices, services and other expenses stay together in your selected archive.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        Button { sheet = .logbook } label: {
-                            Label("Open logbook", systemImage: "arrow.right").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent).tint(NativeTheme.action).controlSize(.large)
-                        .accessibilityIdentifier("openLogbook")
-                    }
+                    serviceHistoryCard
+                    cashCard
+                    runningCostCard
                 }.padding(16)
             }
             .background(NativeTheme.background)
@@ -124,21 +118,75 @@ struct NativeGarageView: View {
         }
     }
 
-    private var fuelCard: some View {
-        NativeCard(title: "Fuel evidence", symbol: "drop") {
-            if let totals = snapshot?.fuel?.totals {
-                NativeMetric(title: "Full-to-full economy", value: NativeFormat.number(totals.economyKMPL, digits: 1), unit: "km/L", caption: "Observed fill intervals, using the current distance calibration")
-                Text("Fill history: \(totals.firstFill ?? "unknown") to \(totals.lastFill ?? "unknown"). Trip fuel and costs elsewhere are model estimates.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let missing = totals.missingFills, missing > 0 {
-                    Label("\(missing) intervals may have missing fills", systemImage: "exclamationmark.circle")
-                        .font(.subheadline).foregroundStyle(NativeTheme.accent)
-                }
+    private var recordsCard: some View {
+        NativeCard(title: "Records & service", symbol: "book.closed") {
+            Button { sheet = .logbook } label: {
+                Label("Open logbook", systemImage: "book.pages").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(NativeTheme.action).controlSize(.large)
+            .accessibilityIdentifier("openLogbook")
+            NavigationLink {
+                NativeServiceHistoryView(items: store.items)
+            } label: {
+                Label("Service history & invoices", systemImage: "wrench.and.screwdriver")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.accessibilityIdentifier("openServiceHistory")
+            Divider()
+            NavigationLink {
+                NativeMaintenancePlanView(snapshot: snapshot)
+            } label: {
+                Label("Full maintenance plan & reminders", systemImage: "calendar.badge.clock")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.accessibilityIdentifier("openMaintenancePlan")
+            Text("Browse every recorded visit and its original attachments. Fuel history, model diagnostics and scenarios now live together in Lab.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var services: [I20Core.ServiceVisit] {
+        store.items.compactMap { if case .service(let visit) = $0 { return visit }; return nil }
+    }
+
+    private var serviceHistoryCard: some View {
+        NativeCard(title: "Recent workshop visits", symbol: "clock.arrow.circlepath") {
+            if services.isEmpty {
+                Text("No service visits have been recorded. Add the work that was actually done to preserve parts, labour, odometer and invoice history.")
+                    .font(.subheadline).foregroundStyle(.secondary)
             } else {
-                Text("Add complete full-tank refuels to build an economy history. Estimates appear only when enough usable data is available.")
+                ForEach(services.prefix(3)) { service in
+                    NavigationLink {
+                        LogReadOnlyDetailView(item: .service(service), archiveRoot: folder.book?.root)
+                    } label: {
+                        NativeServiceRow(service: service).foregroundStyle(.primary)
+                    }.buttonStyle(.plain)
+                }
+                NavigationLink("View all \(services.count) visits") { NativeServiceHistoryView(items: store.items) }
+                    .frame(minHeight: 44)
+            }
+        }
+    }
+
+    private var runningCostCard: some View {
+        NativeCard(title: "Running cost per kilometre", symbol: "indianrupeesign.circle") {
+            if let cost = snapshot?.overview.runningCost {
+                let rates = GarageCostEvidence(cost: cost, fuel: snapshot?.fuel?.totals).rates
+                NativeMetric(title: "Combined recorded / modelled rate", value: rates.total.map { "₹\(NativeFormat.number($0, digits: 2))" } ?? "Unavailable", unit: "/km")
+                NativeRunningCostChart(rates: rates)
+                costRow("Fuel · model estimate", value: rates.fuel)
+                costRow("Logged service payments", value: rates.service)
+                costRow("Logged other payments", value: rates.other)
+                Text("Fuel uses modelled consumption over archived trips. Service and other payments are divided by the reported odometer (\(NativeFormat.number(cost.km)) km). These different coverage windows are not a complete ownership-cost accounting.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Running-cost rates appear when odometer and usable fuel/history inputs are available. Missing components stay unavailable.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func costRow(_ title: String, value: Double?) -> some View {
+        LabeledContent(title, value: value.map { "₹\(NativeFormat.number($0, digits: 2))/km" } ?? "Unavailable")
+            .font(.subheadline)
     }
 
     private var maintenanceCard: some View {

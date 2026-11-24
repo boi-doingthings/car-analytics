@@ -42,6 +42,14 @@ struct NativeTripsView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let snapshot {
+                    Section {
+                        archiveSummary(snapshot)
+                        NavigationLink { NativeTripActivityView(snapshot: snapshot) } label: {
+                            Label("Driving activity", systemImage: "calendar")
+                        }.accessibilityIdentifier("openDrivingActivity")
+                    }
+                }
                 Section {
                     Picker("Show", selection: $filter) {
                         ForEach(NativeTripFilter.allCases) { Text($0.rawValue).tag($0) }
@@ -86,6 +94,26 @@ struct NativeTripsView: View {
             }
         }
     }
+    private func archiveSummary(_ snapshot: AnalyticsSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 16) {
+                NativeMetric(title: "Odometer", value: NativeFormat.number(snapshot.overview.status?.odometer), unit: snapshot.overview.status?.odometer == nil ? nil : "km", caption: "Last vehicle reading")
+                NativeMetric(title: "Archived distance", value: NativeFormat.number(snapshot.overview.totals?.km), unit: snapshot.overview.totals?.km == nil ? nil : "km", caption: "Includes model distance correction")
+            }
+            DisclosureGroup("Archive overview") {
+                VStack(spacing: 9) {
+                    LabeledContent("Recorded drives", value: "\(snapshot.trips.count)")
+                    LabeledContent("Recorded trip time", value: NativeFormat.duration(snapshot.overview.totals?.hours.map { $0 * 60 }))
+                    LabeledContent("Idle share", value: NativeFormat.percent(snapshot.overview.totals?.idleShare))
+                    LabeledContent("Distance / odometer coverage", value: NativeFormat.percent(snapshot.overview.totals?.coverage))
+                    LabeledContent("Routes retained", value: snapshot.overview.totals?.routedTrips.map(String.init) ?? "Unavailable")
+                    Text("\(snapshot.overview.totals?.firstDay ?? "Unknown start") to \(snapshot.overview.totals?.lastDay ?? "unknown end"). Coverage is distance coverage, not proof every day was collected.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.font(.subheadline).padding(.top, 8)
+            }.font(.subheadline)
+        }.padding(.vertical, 4)
+    }
+
 }
 
 struct NativeTripRow: View {
@@ -127,17 +155,6 @@ struct NativeTripDetailView: View {
     let trip: NativeTrip
     let snapshot: AnalyticsSnapshot
 
-    private var points: [CLLocationCoordinate2D] {
-        trip.coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-            .filter { CLLocationCoordinate2DIsValid($0) }
-    }
-
-    private var routeSegments: [[CLLocationCoordinate2D]] {
-        trip.routeSegments.map { segment in
-            segment.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-        }
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -147,8 +164,8 @@ struct NativeTripDetailView: View {
                     Text("\(NativeFormat.date(trip.start, includeTime: true)) · IST")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
-                routeCard
                 summaryCard
+                NativeTripReplayView(trip: trip, generationID: snapshot.generationID)
                 fuelCard
                 comparisonCard
                 NativeNotice(symbol: "info.circle", title: "Understand the source", message: "Trip time includes moving and idling. Fuel use and cost are model estimates, not a fuel-flow measurement. Archived GPS points cannot establish precise acceleration or live driving conditions.", tint: NativeTheme.blue)
@@ -159,39 +176,6 @@ struct NativeTripDetailView: View {
         .navigationTitle("Drive debrief")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("tripDetail")
-    }
-
-    @ViewBuilder private var routeCard: some View {
-        if trip.hasRoute {
-            NativeCard(title: "Archived route", symbol: "map") {
-                Map {
-                    ForEach(Array(routeSegments.enumerated()), id: \.offset) { segment in
-                        MapPolyline(coordinates: segment.element).stroke(NativeTheme.blue, lineWidth: 4)
-                    }
-                    if let first = points.first {
-                        Annotation("Start", coordinate: first) {
-                            Image(systemName: "circle.fill").font(.caption)
-                                .foregroundStyle(.white).padding(5).background(NativeTheme.blue, in: Circle())
-                        }
-                    }
-                    if let last = points.last {
-                        Annotation("Finish", coordinate: last) {
-                            Image(systemName: "flag.fill").font(.caption)
-                                .foregroundStyle(.white).padding(6).background(NativeTheme.navy, in: Circle())
-                        }
-                    }
-                }
-                .mapStyle(.standard(elevation: .flat))
-                .mapControls { MapCompass(); MapScaleView() }
-                .frame(height: 220)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .accessibilityLabel("Archived route for \(NativeFormat.tripTitle(trip)), \(points.count) recorded points")
-                Text("\(points.count) archived points. Connections across gaps over 2 minutes or 2 km are omitted. Remaining lines connect samples, not verified roads. Map tiles may need a connection.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        } else {
-            NativeNotice(symbol: "map", title: "Route unavailable", message: "The trip summary is preserved, but the archived GPS points do not form a usable route. Missing or disconnected GPS is not evidence that the trip did not happen.", tint: NativeTheme.blue)
-        }
     }
 
     private var summaryCard: some View {
@@ -208,6 +192,19 @@ struct NativeTripDetailView: View {
             HStack(alignment: .top, spacing: 16) {
                 NativeMetric(title: "Moving speed", value: NativeFormat.number(trip.movingSpeedKMH, digits: 1), unit: trip.movingSpeedKMH == nil ? nil : "km/h", caption: "Excludes idle time")
                 NativeMetric(title: "Provider events", value: trip.events.map(String.init) ?? "Unavailable", caption: "Combined event count")
+            }
+            HStack(alignment: .top, spacing: 16) {
+                NativeMetric(title: "Top speed", value: NativeFormat.number(trip.maxSpeedKMH, digits: 1), unit: trip.maxSpeedKMH == nil ? nil : "km/h", caption: "Vehicle-reported trip maximum")
+                NativeMetric(title: "Idle share", value: NativeFormat.percent(trip.idleShare), caption: "Moving + idle denominator")
+            }
+            if let events = trip.record.events, events.count >= 3 {
+                DisclosureGroup("Provider event breakdown") {
+                    VStack(spacing: 8) {
+                        LabeledContent("Harsh braking", value: "\(events[0])")
+                        LabeledContent("Rapid acceleration", value: "\(events[1])")
+                        LabeledContent("Overspeed", value: "\(events[2])")
+                    }.font(.subheadline).padding(.top, 8)
+                }.font(.subheadline)
             }
             Text("These summaries describe operating conditions and provider-defined events. They are not a driver safety score.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

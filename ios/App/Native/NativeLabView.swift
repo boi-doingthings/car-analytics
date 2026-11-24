@@ -1,41 +1,47 @@
 import SwiftUI
 
+private enum NativeLabStudy: String, CaseIterable, Identifiable {
+    case patterns = "Patterns"
+    case performance = "Performance"
+    var id: String { rawValue }
+}
+
 struct NativeLabView: View {
     let snapshot: AnalyticsSnapshot?
     var onSettings: () -> Void = {}
-    @EnvironmentObject private var sync: SyncCoordinator
+    @State private var study: NativeLabStudy = .patterns
+    @State private var window: LabWindow = .quarter
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     Text("Ask a question. Inspect the evidence.")
                         .font(.subheadline).foregroundStyle(.secondary)
-                    NativeCard(title: "Engineering tools", symbol: "slider.horizontal.3") {
-                        NavigationLink { NativeFuelScenarioView(model: snapshot?.fuel?.model) } label: {
-                            tool("Fuel scenario", detail: "Explore distance, journey mix and idling", symbol: "function")
-                        }.buttonStyle(.plain).accessibilityIdentifier("openFuelScenario")
-                        Divider()
-                        NavigationLink { NativeDataQualityView(snapshot: snapshot) } label: {
-                            tool("Data quality", detail: "Coverage, freshness and model support", symbol: "checkmark.shield")
-                        }.buttonStyle(.plain).accessibilityIdentifier("openDataQuality")
-                        Divider()
-                        NavigationLink { DashboardView().navigationTitle("Detailed analysis").navigationBarTitleDisplayMode(.inline) } label: {
-                            tool("Detailed analysis", detail: "Open the existing interactive dashboard", symbol: "chart.xyaxis.line")
-                        }.buttonStyle(.plain).accessibilityIdentifier("openDetailedAnalysis")
+                    tools
+                    if let snapshot {
+                        LabWindowPicker(selection: $window, anchor: snapshot.latestTrip?.start)
+                        Picker("Study", selection: $study) {
+                            ForEach(NativeLabStudy.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("labStudyPicker")
+                        if study == .patterns {
+                            NativeDrivingPatternsView(snapshot: snapshot, window: window)
+                                .accessibilityIdentifier("drivingPatternsScreen")
+                        } else {
+                            NativePerformanceInsightsView(snapshot: snapshot, window: window)
+                                .accessibilityIdentifier("performanceInsightsScreen")
+                        }
+                    } else {
+                        NativeEmptyState(symbol: "chart.xyaxis.line", title: "Your archive is the evidence", message: "Choose a logbook and rebuild its analysis to explore driving patterns and performance studies. You can still open the scenario tool and data-quality diagnostics above.")
                     }
-                    NativeCard(title: "Compare like with like", symbol: "arrow.left.arrow.right") {
-                        Text("Open a trip to see how its duration compares with earlier journeys in the same direction, at a similar time and distance.")
-                            .font(.subheadline)
-                        Text("A baseline needs at least 10 earlier matched trips across 3 dates. Weather and traffic are unobserved; a difference does not establish a cause.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    modelEvidence
-                    NativeNotice(symbol: "scope", title: "Know what was measured", message: "Trip times, distances and provider events are recorded data. Fuel per trip, costs and service arrival dates are estimates. Coarse archived GPS is not high-frequency vehicle telemetry.", tint: NativeTheme.blue)
+                    NativeNotice(symbol: "scope", title: "Know what was measured", message: "Provider trip summaries and events are recorded data. GPS speed and acceleration are reconstructions from coarse archived samples. Fuel use, costs and future odometer values are estimates; differences do not establish causes.", tint: NativeTheme.blue)
                 }.padding(16)
             }
             .background(NativeTheme.background)
             .navigationTitle("Lab")
+            .accessibilityIdentifier("nativeLabScreen")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: onSettings) { Image(systemName: "gearshape") }
@@ -45,115 +51,31 @@ struct NativeLabView: View {
         }
     }
 
+    private var tools: some View {
+        HStack(alignment: .top, spacing: 12) {
+            NavigationLink {
+                NativeFuelScenarioView(model: snapshot?.fuel?.model, snapshot: snapshot)
+            } label: {
+                tool("Fuel & scenarios", detail: "History, model & what-if", symbol: "fuelpump")
+            }.buttonStyle(.plain).accessibilityIdentifier("openFuelScenario")
+            NavigationLink { NativeDataQualityView(snapshot: snapshot) } label: {
+                tool("Data quality", detail: "Coverage & freshness", symbol: "checkmark.shield")
+            }.buttonStyle(.plain).accessibilityIdentifier("openDataQuality")
+        }
+    }
+
     private func tool(_ title: String, detail: String, symbol: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: symbol).foregroundStyle(NativeTheme.blue).font(.title3).frame(width: 28)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline).foregroundStyle(.primary)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-        }.padding(.vertical, 7).frame(minHeight: 44)
-    }
-
-    private var modelEvidence: some View {
-        NativeCard(title: "Fuel model support", symbol: "point.3.connected.trianglepath.dotted") {
-            if let model = snapshot?.fuel?.model {
-                NativeMetric(title: "Usable fill intervals", value: model.intervalCount.map(String.init) ?? "Unavailable", caption: "Independent fuel observations; trip count is not the training sample size")
-                if let count = model.intervalCount, count < 3 {
-                    Text("Very little evidence. The model may largely reflect its starting assumptions.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                if let validation = model.validation, validation.schema == 1, validation.units == "litres" {
-                    Divider()
-                    Text("Chronological interval check").font(.subheadline.weight(.semibold))
-                    Text("\(validation.chronological.predictions) intervals predicted using earlier completed intervals")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if validation.chronological.predictions > 0 {
-                        validationRow("Model error", value: validation.chronological.modelMAE)
-                        validationRow("Simple baseline error", value: validation.chronological.baselineMAE)
-                        validationRow("Signed model bias", value: validation.chronological.modelBias)
-                        Text("Error is mean absolute error in litres. Positive bias means predicted fuel exceeds the recorded amount.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("Needs at least \(validation.chronological.minTrainIntervals) earlier completed fill intervals before the next interval can be tested.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Divider()
-                    validationRow("Nested leave-one-out error", value: validation.loo.modelMAE)
-                    Text("Noise and coefficients are fitted again inside each validation fold. These checks assess the consumption fit for reconstructed intervals; distance calibration and fill reconstruction are not independently backtested. They do not prove a causal improvement.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("This saved analysis uses older validation diagnostics. Rebuild the archive to calculate nested and chronological checks.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                Text("The model needs usable full-to-full refuel intervals. You can explore recorded journeys while that history builds.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-    }
-    private func validationRow(_ title: String, value: Double?) -> some View {
-        LabeledContent(title, value: value.map { "\(NativeFormat.number($0, digits: 1)) L" } ?? "Unavailable")
-            .font(.subheadline)
-    }
-
-}
-
-struct NativeFuelScenarioView: View {
-    let model: FuelModel?
-    @State private var distance = 200.0
-    @State private var cityShare = 0.6
-    @State private var idleMinutes = 60.0
-    @State private var price = 100.0
-
-    private var scenario: FuelScenario {
-        FuelScenario(distanceKM: distance, cityShare: cityShare, idleHours: idleMinutes / 60, pricePerLitre: price)
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                Text("An illustrative week")
-                    .font(.headline)
-                Text("Adjust hypothetical inputs. Starting values are examples, not your driving history.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            Section("Your assumptions") {
-                control("Distance", value: $distance, range: 0...1000, step: 10, display: "\(NativeFormat.number(distance)) km")
-                control("City-distance share", value: $cityShare, range: 0...1, step: 0.05, display: NativeFormat.percent(cityShare))
-                control("Engine idling", value: $idleMinutes, range: 0...600, step: 15, display: "\(NativeFormat.number(idleMinutes)) min")
-                control("Fuel price", value: $price, range: 1...200, step: 1, display: "\(NativeFormat.money(price))/L")
-            }
-            Section("Model-based scenario") {
-                if let estimate = scenario.estimate(using: model?.coef) {
-                    LabeledContent("Fuel", value: "\(NativeFormat.number(estimate.totalLitres, digits: 1)) L")
-                    LabeledContent("Of which idling", value: "\(NativeFormat.number(estimate.idleLitres, digits: 1)) L")
-                    LabeledContent("Cost", value: NativeFormat.money(estimate.cost))
-                    Text("Based on \(model?.intervalCount.map(String.init) ?? "an unknown number of") usable fill intervals. This is a conditional model calculation, not a forecast or guaranteed saving. Its uncertainty is not quantified here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("No usable fuel model is available. Log complete refuel intervals to enable estimates; no default consumption figures are substituted.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("How this works") {
-                Text("Fuel = city km × city L/100 km ÷ 100 + highway km × highway L/100 km ÷ 100 + idle hours × idle L/hour.")
-                Text("City/highway is currently a whole-trip speed proxy. The calculation does not account for a change in weather, traffic, AC use, payload or driving conditions. Inputs outside the observed operating mix may extrapolate poorly.")
-                Text("Use scenarios when parked. Avoid treating all traffic idling as something you can safely eliminate.")
-            }.font(.footnote)
-        }
-        .navigationTitle("Fuel scenario").navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier("fuelScenarioScreen")
-    }
-
-    private func control(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, display: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            LabeledContent(title, value: display).font(.subheadline).monospacedDigit()
-            Slider(value: value, in: range, step: step) { Text(title) }
-                .accessibilityValue(display)
-        }.padding(.vertical, 3)
+            HStack(spacing: 6) {
+                Image(systemName: symbol).foregroundStyle(NativeTheme.blue)
+                Text(title).foregroundStyle(.primary)
+            }
+            .font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+        .padding(14)
+        .background(NativeTheme.surface, in: RoundedRectangle(cornerRadius: 18))
     }
 }
 

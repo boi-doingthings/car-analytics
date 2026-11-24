@@ -1,6 +1,6 @@
 # V2 native foundation
 
-Development branch: `codex/v2-native-foundation`. This first implementation establishes native daily workflows and consistent analytical snapshots. The broader roadmap remains in [the v2 plan](NEXT_VERSION_PLAN.md).
+Development branch: `codex/v2-native-foundation`. The current native analytics migration is described in [its coverage plan](NATIVE_ANALYTICS_MIGRATION.md); the broader roadmap remains in [the v2 plan](NEXT_VERSION_PLAN.md). Earlier increment notes below record how the foundation evolved.
 
 ## Available in this increment
 
@@ -63,3 +63,13 @@ Removing incidental rebuilds also exposed a first-presentation form bug: the she
 Device acceptance: keep archive changes disabled, wait for the first analysis to finish, visit Today and Lab → Detailed analysis repeatedly, then background and reopen the app. No repeated recalculation should occur with unchanged inputs on the same day. An explicit refresh should complete once. A new day, changed analytical input, changed analytical script or missing output legitimately requires analysis. These checks avoid repeated full analysis; battery consumption has not been measured on a physical device.
 
 Validation: 120 app unit tests and all four simulator UI tests passed. Tests include the actual embedded WebKit page remaining idle until explicit refresh, one reload per publication, metadata-cache reuse/invalidation, concurrent source changes and iCloud shadow placeholders. JavaScript checks passed 59 public tests with 21 private-history skips, including 15 sync-controller regressions. Publication and Gitleaks scans passed. All automated runs used synthetic archives.
+
+## Native analytics migration (current)
+
+The phone now has Today, Trips, Atlas, Garage and Lab tabs. Normal navigation no longer opens the desktop Detailed analysis page. Trips owns odometer/archive context, monthly/day activity and one shared journey debrief with route replay, speed/acceleration context, provider events and comparisons. Atlas provides independent historical map layers, date ranges, density, manual scrubbing and time lapse. Garage owns complete service/invoice browsing, image attachments, maintenance schedules, reminders and running costs. Lab directly exposes Patterns and Performance; Fuel & scenarios combines historical fuel exploration, calibration, diagnostics, tank/gauge paths and the calculator.
+
+The [migration coverage document](NATIVE_ANALYTICS_MIGRATION.md) maps all former sections and lists intentional display limits. The analytical fitting engine remains shared with the desktop viewer. Snapshot decoding now exposes its full outputs, validates/caches route geometry once, precomputes history buckets and identifies published generations precisely. Large maps and plots bound rendering work, and playback stops when hidden/backgrounded.
+
+Review also corrected missing fuel-model rates being presented as zero, archive identity on invoice loading, overlapping archive-banner/navigation controls, full-row activity touch regions, stacked comparison shares, duplicate series legends and insufficient precision for small values. These changes preserve the existing archive write-consent and collector-retention policies.
+
+Validation passed 134 app unit tests and all eight native UI workflows, with focused reruns after interface fixes. Public JavaScript checks passed 59 tests with 21 private-history skips. A separate invented six-month archive exercised populated charts with 286 trips, 26 refuels, three trip clusters and 22 chronological fuel predictions; the native decoding/runner integration preserved archive bytes. Privacy and secret scans passed. No main archive or live provider calls were used in this work. Physical-device acceptance and battery profiling remain outstanding.

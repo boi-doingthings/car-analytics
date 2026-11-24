@@ -403,7 +403,7 @@ struct LogListView: View {
         let book = folder.book?.root == presentation.archiveRoot ? folder.book : nil
         switch presentation.action {
         case .inspect(let item):
-            LogReadOnlyDetailView(item: item)
+            NavigationStack { LogReadOnlyDetailView(item: item, archiveRoot: presentation.archiveRoot) }
         case .newRefuel:
             RefuelForm(model: RefuelFormModel(past: store.refuels), book: book, onSaved: saved)
         case .newService:
@@ -473,86 +473,100 @@ struct LogRow: View {
 }
 
 /// Browsing a record never instantiates a form or exposes a save/delete action.
-private struct LogReadOnlyDetailView: View {
+struct LogReadOnlyDetailView: View {
     let item: LogItem
+    let archiveRoot: URL?
     @Environment(\.dismiss) private var dismiss
 
+    init(item: LogItem, archiveRoot: URL? = nil) {
+        self.item = item
+        self.archiveRoot = archiveRoot
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Label("Read-only archive", systemImage: "lock")
-                    LabeledContent("Date", value: item.date)
-                } footer: {
-                    Text("Browse this record without changing it. Archive changes can be enabled in Settings.")
+        Form {
+            Section {
+                Label("View only", systemImage: "doc.text.magnifyingglass")
+                LabeledContent("Date", value: item.date)
+            } footer: {
+                Text("Browse the original record here. Use Garage → Open logbook to edit records when archive changes are enabled.")
+            }
+            switch item {
+            case .refuel(let record):
+                Section("Refuel") {
+                    field("Station", record.station)
+                    field("Company", record.company)
+                    field("Time", record.time)
+                    amount("Payment", record.amount, suffix: "INR")
+                    amount("Litres", record.litres, suffix: "L")
+                    amount("Rate", record.rate, suffix: "INR/L")
+                    amount("Odometer", record.odometerKm, suffix: "km")
+                    LabeledContent("Tank", value: record.fullTank.map { $0 ? "Full" : "Partial" } ?? "Not recorded")
+                    LabeledContent("Missed fill", value: record.missed ? "Yes" : "No")
+                    field("Note", record.note)
                 }
-                switch item {
-                case .refuel(let record):
-                    Section("Refuel") {
-                        field("Station", record.station)
-                        field("Company", record.company)
-                        field("Time", record.time)
-                        amount("Payment", record.amount, suffix: "INR")
-                        amount("Litres", record.litres, suffix: "L")
-                        amount("Rate", record.rate, suffix: "INR/L")
-                        amount("Odometer", record.odometerKm, suffix: "km")
-                        LabeledContent("Tank", value: record.fullTank.map { $0 ? "Full" : "Partial" } ?? "Not recorded")
-                        LabeledContent("Missed fill", value: record.missed ? "Yes" : "No")
-                        field("Note", record.note)
-                    }
-                case .service(let record):
-                    Section("Service") {
-                        field("Workshop", record.workshop)
-                        field("Kind", record.kindName)
-                        field("Invoice", record.invoice)
-                        amount("Odometer", record.odometerKm, suffix: "km")
-                        amount("Parts", record.partsTotal, suffix: "INR")
-                        amount("Tax", record.gst, suffix: "INR")
-                        amount("Total", record.total, suffix: "INR")
-                        field("Notes", record.notes)
-                    }
-                    if !record.parts.isEmpty {
-                        Section("Parts") {
-                            ForEach(Array(record.parts.enumerated()), id: \.offset) { _, part in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(part.name)
-                                    Text("\(plainNumber(part.amount)) INR").font(.subheadline).foregroundStyle(.secondary)
-                                    if !part.resets.isEmpty { Text("Resets: \(part.resets.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary) }
-                                }
+            case .service(let record):
+                Section("Service") {
+                    field("Workshop", record.workshop)
+                    field("Kind", record.kindName)
+                    field("Invoice", record.invoice)
+                    amount("Odometer", record.odometerKm, suffix: "km")
+                    amount("Parts", record.partsTotal, suffix: "INR")
+                    amount("Tax", record.gst, suffix: "INR")
+                    amount("Total", record.total, suffix: "INR")
+                    field("Notes", record.notes)
+                }
+                if !record.parts.isEmpty {
+                    Section("Parts") {
+                        ForEach(Array(record.parts.enumerated()), id: \.offset) { _, part in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(part.name)
+                                Text("\(plainNumber(part.qty)) \(part.unit ?? "units")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("\(plainNumber(part.amount)) INR").font(.subheadline).foregroundStyle(.secondary)
+                                if !part.resets.isEmpty { Text("Resets: \(part.resets.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary) }
                             }
                         }
                     }
-                    if !record.labour.isEmpty {
-                        Section("Labour") {
-                            ForEach(Array(record.labour.enumerated()), id: \.offset) { _, labour in
-                                LabeledContent(labour.name, value: "\(plainNumber(labour.amount)) INR")
-                            }
+                }
+                if !record.labour.isEmpty {
+                    Section("Labour") {
+                        ForEach(Array(record.labour.enumerated()), id: \.offset) { _, labour in
+                            LabeledContent(labour.name, value: "\(plainNumber(labour.amount)) INR")
                         }
-                    }
-                    if !record.photos.isEmpty {
-                        Section {
-                            LabeledContent("Attached photos", value: "\(record.photos.count)")
-                        } footer: {
-                            Text("Original attachments remain in the archive.")
-                        }
-                    }
-                case .maintenance(let record):
-                    Section("Expense or maintenance") {
-                        LabeledContent("Category", value: record.category.label)
-                        amount("Cost", record.cost, suffix: "INR")
-                        amount("Odometer", record.odometerKm, suffix: "km")
-                        field("Note", record.note)
-                        field("Reminder", record.reminder)
                     }
                 }
+                if !record.photos.isEmpty {
+                    Section {
+                        ForEach(Array(record.photos.enumerated()), id: \.offset) { index, name in
+                            NavigationLink {
+                                NativeReceiptView(serviceID: record.id, photoName: name, archiveRoot: archiveRoot)
+                            } label: {
+                                Label("Attachment \(index + 1)", systemImage: "doc.viewfinder")
+                            }
+                        }
+                    } header: {
+                        Text("Invoice attachments")
+                    } footer: {
+                        Text("Original attachments remain in the archive.")
+                    }
+                }
+            case .maintenance(let record):
+                Section("Expense or maintenance") {
+                    LabeledContent("Category", value: record.category.label)
+                    amount("Cost", record.cost, suffix: "INR")
+                    amount("Odometer", record.odometerKm, suffix: "km")
+                    field("Note", record.note)
+                    field("Reminder", record.reminder)
+                }
             }
-            .navigationTitle("Record details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-            .accessibilityIdentifier("readOnlyLogDetail")
         }
+        .navigationTitle("Record details")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+        }
+        .accessibilityIdentifier("readOnlyLogDetail")
     }
 
     @ViewBuilder private func field(_ title: String, _ value: String?) -> some View {

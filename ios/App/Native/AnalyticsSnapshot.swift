@@ -2,6 +2,8 @@ import Foundation
 
 /// Typed, immutable read model for one published analytical generation. No archive writes occur here.
 struct AnalyticsSnapshot: Sendable {
+    /// Stable for this decoded value and distinct for every published cache generation.
+    let generationID: String
     let overview: OverviewAnalytics
     let fuel: FuelAnalytics?
     let performance: PerformanceAnalytics?
@@ -18,12 +20,17 @@ struct AnalyticsSnapshot: Sendable {
         }
         return try AnalyticsSnapshot(overview: decode(OverviewAnalytics.self, "data.json"),
                                      fuel: optional(FuelAnalytics.self, "fuel.json"),
-                                     performance: optional(PerformanceAnalytics.self, "performance.json"))
+                                     performance: optional(PerformanceAnalytics.self, "performance.json"),
+                                     generationID: UUID(uuidString: directory.lastPathComponent) == nil
+                                        ? UUID().uuidString : directory.lastPathComponent)
     }
 
     let trips: [NativeTrip]
+    let history: DrivingHistory
 
-    init(overview: OverviewAnalytics, fuel: FuelAnalytics? = nil, performance: PerformanceAnalytics? = nil) {
+    init(overview: OverviewAnalytics, fuel: FuelAnalytics? = nil, performance: PerformanceAnalytics? = nil,
+         generationID: String = UUID().uuidString) {
+        self.generationID = generationID
         self.overview = overview
         self.fuel = fuel
         self.performance = performance
@@ -31,13 +38,25 @@ struct AnalyticsSnapshot: Sendable {
         let fuelByID = Dictionary((fuel?.trips ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let performanceByID = Dictionary((performance?.trips ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var seen = Set<String>()
-        self.trips = overview.trips.filter { seen.insert($0.id).inserted }.map { trip in
+        let normalizedTrips = overview.trips.filter { seen.insert($0.id).inserted }.map { trip in
             NativeTrip(record: trip, fuel: fuelByID[trip.id], performance: performanceByID[trip.id],
                        route: overview.routes[trip.id] ?? [])
         }.sorted {
             if $0.start == $1.start { return $0.id > $1.id }
             return ($0.start ?? .distantPast) > ($1.start ?? .distantPast)
         }
+        self.trips = normalizedTrips
+        self.history = DrivingHistory(trips: normalizedTrips)
+    }
+
+    /// An inclusive India-calendar date range; unknown timestamps are retained only for all-history.
+    func tripRange(from: Date? = nil, through: Date? = nil) -> [NativeTrip] {
+        if from == nil && through == nil { return trips }
+        let calendar = AnalyticsDate.calendar
+        let lower = from.map { calendar.startOfDay(for: $0) } ?? .distantPast
+        let upper = through.flatMap { calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: $0)) } ?? .distantFuture
+        guard lower < upper else { return [] }
+        return trips.filter { $0.start.map { $0 >= lower && $0 < upper } ?? false }
     }
 
     var latestTrip: NativeTrip? { trips.first }
@@ -172,7 +191,7 @@ struct NativeTrip: Identifiable, Sendable {
     let route: [[Double?]]
     var id: String { record.id }
     var startText: String { record.start ?? "" }
-    var day: String { String(startText.prefix(10)) }
+    let day: String
     let start: Date?
     let end: Date?
     init(record: OverviewTrip, fuel: FuelTrip?, performance: PerformanceTrip?, route: [[Double?]]) {
@@ -180,8 +199,13 @@ struct NativeTrip: Identifiable, Sendable {
         self.fuel = fuel
         self.performance = performance
         self.route = route
-        self.start = AnalyticsDate.parse(record.start)
+        let parsedStart = AnalyticsDate.parse(record.start)
+        self.start = parsedStart
+        self.day = parsedStart.map(AnalyticsDate.day) ?? String((record.start ?? "").prefix(10))
         self.end = AnalyticsDate.parse(record.end)
+        let segments = Self.segmentRoute(route)
+        self.routeSegments = segments
+        self.coordinates = segments.flatMap { $0 }
     }
     /// Raw provider trip distance; corrected model distance is exposed separately.
     var distanceKM: Double? { record.km }
@@ -209,10 +233,14 @@ struct NativeTrip: Identifiable, Sendable {
     var estimatedFuelCost: Double? { fuel?.cost }
     var events: Int? { record.events.map { $0.reduce(0, +) } }
     var hasRoute: Bool { record.route == true && routeSegments.contains { $0.count >= 2 } }
-    var coordinates: [RouteCoordinate] { routeSegments.flatMap { $0 } }
+    let coordinates: [RouteCoordinate]
+    let routeSegments: [[RouteCoordinate]]
+    var hardBrakeEvents: Int? { record.events.flatMap { $0.indices.contains(0) ? $0[0] : nil } }
+    var rapidAccelerationEvents: Int? { record.events.flatMap { $0.indices.contains(1) ? $0[1] : nil } }
+    var overspeedEvents: Int? { record.events.flatMap { $0.indices.contains(2) ? $0[2] : nil } }
     /// Do not draw an invented connection across invalid samples, large gaps or coordinate jumps.
     /// These conservative display cutoffs are quality guards, not proof of high-frequency telemetry.
-    var routeSegments: [[RouteCoordinate]] {
+    private static func segmentRoute(_ route: [[Double?]]) -> [[RouteCoordinate]] {
         var segments: [[RouteCoordinate]] = []
         var current: [RouteCoordinate] = []
         func flush() {
@@ -252,6 +280,10 @@ enum AnalyticsDate {
         calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
         return calendar
     }
+    static func day(_ date: Date) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year!, components.month!, components.day!)
+    }
     /// Provider timestamps without offsets are India local time, even when the phone travels.
     static func parse(_ value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
@@ -283,7 +315,24 @@ struct OverviewAnalytics: Decodable, Sendable {
     let service: [ServiceDue]
     let services: [ServiceVisitSummary]
     let reminders: [MaintenanceReminder]
-    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", vehicle, status, totals, trips, routes, service, services, reminders }
+    let days: [OverviewDay]?
+    let months: [OverviewMonth]?
+    let rhythm: [[Double?]]?
+    let weekdayKM: [Double?]?
+    let idleByHour: [HourlyIdle]?
+    let places: [InferredPlace]?
+    let hotspots: [TrafficHotspot]?
+    let commute: OverviewCommute?
+    let milestones: [OdometerMilestone]?
+    let fuelHistory: [FuelGaugeReading]?
+    let runningCost: RunningCost?
+    let tank: TankHistory?
+    let findings: [String: String?]?
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at", vehicle, status, totals, trips, routes, service, services, reminders
+        case days, months, rhythm, places, hotspots, commute, milestones, tank, findings
+        case weekdayKM = "weekday_km", idleByHour = "idle_by_hour", fuelHistory = "fuel", runningCost = "running_cost"
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         generatedAt = try c.decodeIfPresent(String.self, forKey: .generatedAt)
@@ -295,153 +344,18 @@ struct OverviewAnalytics: Decodable, Sendable {
         service = try c.decodeIfPresent([ServiceDue].self, forKey: .service) ?? []
         services = try c.decodeIfPresent([ServiceVisitSummary].self, forKey: .services) ?? []
         reminders = try c.decodeIfPresent([MaintenanceReminder].self, forKey: .reminders) ?? []
+        days = try c.decodeIfPresent([OverviewDay].self, forKey: .days)
+        months = try c.decodeIfPresent([OverviewMonth].self, forKey: .months)
+        rhythm = try c.decodeIfPresent([[Double?]].self, forKey: .rhythm)
+        weekdayKM = try c.decodeIfPresent([Double?].self, forKey: .weekdayKM)
+        idleByHour = try c.decodeIfPresent([HourlyIdle].self, forKey: .idleByHour)
+        places = try c.decodeIfPresent([InferredPlace].self, forKey: .places)
+        hotspots = try c.decodeIfPresent([TrafficHotspot].self, forKey: .hotspots)
+        commute = try c.decodeIfPresent(OverviewCommute.self, forKey: .commute)
+        milestones = try c.decodeIfPresent([OdometerMilestone].self, forKey: .milestones)
+        fuelHistory = try c.decodeIfPresent([FuelGaugeReading].self, forKey: .fuelHistory)
+        runningCost = try c.decodeIfPresent(RunningCost.self, forKey: .runningCost)
+        tank = try c.decodeIfPresent(TankHistory.self, forKey: .tank)
+        findings = try c.decodeIfPresent([String: String?].self, forKey: .findings)
     }
-}
-struct VehicleSummary: Decodable, Sendable { let model: String?; let year: String? }
-struct VehicleStatus: Decodable, Sendable {
-    let odometer: Double?
-    let fuelPercent: Double?
-    let rangeKM: Double?
-    let locked: Bool?
-    let lowFuel: Bool?
-    let asOfText: String?
-    var asOf: Date? { AnalyticsDate.parse(asOfText) }
-    enum CodingKeys: String, CodingKey { case odometer, locked; case fuelPercent = "fuel_pct", rangeKM = "range_km", lowFuel = "low_fuel", asOfText = "as_of" }
-}
-struct OverviewTotals: Decodable, Sendable {
-    let km: Double?
-    let trips: Int?
-    let hours: Double?
-    let idleShare: Double?
-    let coverage: Double?
-    let routedTrips: Int?
-    let firstDay: String?
-    let lastDay: String?
-    enum CodingKeys: String, CodingKey { case km, trips, hours, coverage; case idleShare = "idle_share", routedTrips = "routed_trips", firstDay = "first_day", lastDay = "last_day" }
-}
-struct OverviewTrip: Decodable, Sendable {
-    let id: String
-    let start: String?
-    let end: String?
-    let km: Double?
-    let drive: Double?
-    let idle: Double?
-    let avg: Double?
-    let max: Double?
-    let events: [Int]?
-    let route: Bool?
-    let from: String?
-    let to: String?
-}
-struct ServiceDue: Decodable, Identifiable, Sendable {
-    var id: String { item }
-    let item: String
-    let due: String?
-    let daysLeft: Int?
-    let kmDue: Double?
-    let trigger: String?
-    let lastDone: LastService?
-    enum CodingKeys: String, CodingKey { case item, due, trigger; case daysLeft = "days_left", kmDue = "km_due", lastDone = "last_done" }
-    struct LastService: Decodable, Sendable { let date: String?; let km: Double? }
-}
-struct ServiceVisitSummary: Decodable, Identifiable, Sendable {
-    let id: String?
-    let date: String?
-    let workshop: String?
-    let total: Double?
-}
-struct MaintenanceReminder: Decodable, Identifiable, Sendable {
-    var id: String { "\(date ?? "")-\(category ?? "")-\(note ?? "")" }
-    let date: String?
-    let category: String?
-    let note: String?
-    let daysLeft: Int?
-    enum CodingKeys: String, CodingKey { case date, category, note; case daysLeft = "days_left" }
-}
-
-struct FuelAnalytics: Decodable, Sendable {
-    let totals: FuelTotals?
-    let model: FuelModel?
-    let calibration: FuelCalibration?
-    let trips: [FuelTrip]?
-    let intervals: [FuelInterval]?
-}
-struct FuelTotals: Decodable, Sendable {
-    let fills: Int?
-    let spend: Double?
-    let litres: Double?
-    let economyKMPL: Double?
-    let modelCostPerKM: Double?
-    let missingFills: Int?
-    let firstFill: String?
-    let lastFill: String?
-    enum CodingKeys: String, CodingKey { case fills, spend, litres; case economyKMPL = "kmpl_valid", modelCostPerKM = "rs_per_km_model", missingFills = "missing_fills", firstFill = "first_fill", lastFill = "last_fill" }
-}
-struct FuelModel: Decodable, Sendable {
-    let coef: FuelCoefficients?
-    let sd: FuelCoefficients?
-    let intervalCount: Int?
-    let leaveOneOutMAE: Double?
-    let baselineMAE: Double?
-    let validation: FuelValidation?
-    enum CodingKeys: String, CodingKey { case coef, sd, validation; case intervalCount = "n_intervals", leaveOneOutMAE = "loo_mae", baselineMAE = "naive_loo_mae" }
-}
-/// Consumption-model diagnostics conditional on the currently reconstructed refuel intervals.
-struct FuelValidation: Decodable, Sendable {
-    let schema: Int
-    let units: String
-    let scope: String
-    let loo: FuelValidationResult
-    let chronological: FuelValidationResult
-}
-struct FuelValidationResult: Decodable, Sendable {
-    let method: String
-    let minTrainIntervals: Int
-    let predictions: Int
-    let modelMAE: Double?
-    let baselineMAE: Double?
-    let modelBias: Double?
-    enum CodingKeys: String, CodingKey {
-        case method
-        case minTrainIntervals = "min_train_intervals"
-        case predictions = "n_predictions"
-        case modelMAE = "model_mae_l"
-        case baselineMAE = "baseline_mae_l"
-        case modelBias = "model_bias_l"
-    }
-}
-struct FuelCoefficients: Decodable, Sendable {
-    let cityL100: Double?
-    let highwayL100: Double?
-    let idleLPH: Double?
-    enum CodingKeys: String, CodingKey { case cityL100 = "city_l100", highwayL100 = "hwy_l100", idleLPH = "idle_lph" }
-}
-struct FuelCalibration: Decodable, Sendable {
-    let delta: Double?
-    let n: Int?
-    let residualSD: Double?
-    enum CodingKeys: String, CodingKey { case delta, n; case residualSD = "resid_sd" }
-}
-struct FuelInterval: Decodable, Identifiable, Sendable {
-    var id: String { "\(from ?? "")-\(to ?? "")" }
-    let from: String?
-    let to: String?
-    let km: Double?
-    let litres: Double?
-    let kmpl: Double?
-    let status: String?
-}
-struct FuelTrip: Decodable, Sendable {
-    let id: String
-    let km: Double?
-    let estimatedLitres: Double?
-    let cost: Double?
-    enum CodingKeys: String, CodingKey { case id, km, cost; case estimatedLitres = "est_l" }
-}
-struct PerformanceAnalytics: Decodable, Sendable { let trips: [PerformanceTrip]? }
-struct PerformanceTrip: Decodable, Sendable {
-    let id: String
-    let km: Double?
-    let elapsedMinutes: Double?
-    enum CodingKeys: String, CodingKey { case id = "trip_id", km, elapsedMinutes = "elapsed_min" }
 }
