@@ -114,7 +114,9 @@ struct NativeTripActivityView: View {
     private var calendarCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: "calendar").foregroundStyle(NativeTheme.accent)
+                Image(systemName: "calendar").font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(NativeTheme.indigo).frame(width: 30, height: 30)
+                    .background(NativeTheme.indigo.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 Text("Month and day explorer").font(.headline)
             }
             Picker("Month", selection: Binding(get: { monthKey }, set: { value in
@@ -198,7 +200,7 @@ struct NativeTripActivityView: View {
     }
     private func dayColor(_ bucket: DrivingBucket?) -> Color {
         guard let bucket else { return .secondary.opacity(0.07) }
-        guard let km = bucket.distanceKM else { return NativeTheme.accent.opacity(0.18) }
+        guard let km = bucket.distanceKM else { return NativeTheme.amber.opacity(0.18) }
         let maximum = monthBuckets.compactMap(\.distanceKM).max() ?? 1
         return NativeTheme.blue.opacity(0.12 + 0.48 * min(1, max(0, km / max(1, maximum))))
     }

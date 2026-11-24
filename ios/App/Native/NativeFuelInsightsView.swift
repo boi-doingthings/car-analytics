@@ -214,7 +214,7 @@ struct NativeFuelHistoryView: View {
     private var economyCard: some View {
         NativeCard(title: "Full-to-full interval economy", symbol: "chart.xyaxis.line") {
             LabXYChart(points: intervalPoints(highway: false), xTitle: "Interval end", yTitle: "km / litre", timeAxis: true)
-            Text("Interval distance is reconstructed/calibrated, fuel comes from logged fills. Blue/amber categories separate usable intervals and review flags. Unknown values remain absent; excluded intervals are not quietly folded into the model fit.")
+            Text("Interval distance is reconstructed/calibrated, fuel comes from logged fills. The legend identifies usable intervals and review flags. Unknown values remain absent; excluded intervals are not quietly folded into the model fit.")
                 .font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("Interval ledger") {
                 ForEach(Array(intervals.suffix(40).enumerated()), id: \.offset) { _, interval in

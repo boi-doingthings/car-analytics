@@ -202,7 +202,7 @@ struct NativeRunningCostChart: View {
         if !components.isEmpty {
             Chart(components) { item in
                 BarMark(x: .value("Component", item.id), y: .value("Rupees per km", item.rate))
-                    .foregroundStyle(item.id == "Fuel estimate" ? NativeTheme.accent : NativeTheme.blue)
+                    .foregroundStyle(item.id == "Fuel estimate" ? NativeTheme.amber : item.id == "Services" ? NativeTheme.teal : NativeTheme.violet)
                     .opacity(selection == nil || selection == item.id ? 1 : 0.35)
                     .accessibilityLabel(item.id)
                     .accessibilityValue("\(NativeFormat.number(item.rate, digits: 2)) rupees per kilometre")

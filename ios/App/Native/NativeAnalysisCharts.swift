@@ -30,6 +30,7 @@ struct LabCategory: Identifiable {
     let value: Double
     var series = "Recorded"
     var detail = ""
+    var isMissing = false
 }
 struct LabHeatCell: Identifiable {
     var id: String { "\(column)|\(row)" }
@@ -94,7 +95,7 @@ enum LabMath {
     static func weekday(_ date: Date) -> Int { (AnalyticsDate.calendar.component(.weekday, from: date) + 5) % 7 }
     static func hourLabel(_ hour: Double) -> String {
         let h = max(0, min(23, Int(hour)))
-        return "\(h % 12 == 0 ? 12 : h % 12)\(h < 12 ? "a" : "p")"
+        return "\(h % 12 == 0 ? 12 : h % 12)\(h < 12 ? "am" : "pm")"
     }
     static func monthDate(_ value: String?) -> Date? {
         value.flatMap { AnalyticsDate.parse($0.count == 7 ? $0 + "-01" : $0) }
@@ -196,7 +197,7 @@ struct LabXYChart: View {
             }
             if let selected { RuleMark(x: .value(xTitle, selected.x)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [4])) }
         }
-        .chartForegroundStyleScale(range: [NativeTheme.accent, NativeTheme.blue, .teal, .purple, .pink])
+        .chartForegroundStyleScale(range: NativeTheme.chartColors)
         .chartXAxisLabel(xTitle).chartYAxisLabel(yTitle)
         .chartXScale(domain: .automatic(includesZero: includeZeroX && !timeAxis && !logarithmicX), type: logarithmicX ? .log : .linear)
         .chartYScale(domain: .automatic(includesZero: includeZeroY && !logarithmicY), type: logarithmicY ? .log : .linear)
@@ -232,43 +233,234 @@ struct LabXYChart: View {
     }
 }
 
+/// Category labels live outside horizontal bars; long vertical series get a real scrollable canvas.
 struct LabBarChart: View {
     let values: [LabCategory]
     let unit: String
     var horizontal = false
+    var compactCategories = false
+    var identifierPrefix: String? = nil
     @State private var selectedLabel: String?
 
+    private var rows: [LabCategory] { values.filter { $0.value.isFinite || $0.isMissing } }
+    private var valid: [LabCategory] { rows.filter { !$0.isMissing } }
+    private var categories: [String] { unique(rows.map(\.label)) }
+    private var series: [String] { unique(rows.map(\.series)) }
+    private var ticks: [String] {
+        guard compactCategories, categories.count > 8 else { return categories }
+        let step = max(1, Int(ceil(Double(categories.count) / 6)))
+        return categories.enumerated().compactMap { index, label in index % step == 0 || index == categories.count - 1 ? label : nil }
+    }
+    private func displayedValue(_ point: LabCategory) -> String {
+        point.isMissing ? "Not recorded" : "\(LabMath.number(point.value)) \(unit)"
+    }
+    private var multipleSeries: Bool { series.count > 1 }
+    private var colorDomain: [String] { multipleSeries ? series : categories }
+    private var revision: String { ([unit] + categories + series).joined(separator: "|") }
+    private func unique(_ strings: [String]) -> [String] {
+        var seen = Set<String>()
+        return strings.filter { seen.insert($0).inserted }
+    }
+    private func colorKey(_ point: LabCategory) -> String { multipleSeries ? point.series : point.label }
+    private func color(for key: String) -> Color {
+        if compactCategories && !multipleSeries {
+            return NativeTheme.teal.opacity(selectedLabel == nil || selectedLabel == key ? 1 : 0.4)
+        }
+        switch key {
+        case "Harsh braking": return NativeTheme.coral
+        case "Rapid acceleration": return NativeTheme.violet
+        case "Overspeed alerts": return NativeTheme.amber
+        default: break
+        }
+        let fullWeekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        if let weekday = LabMath.weekdays.firstIndex(of: key) ?? fullWeekdays.firstIndex(of: key) {
+            return (NativeTheme.chartColors + [NativeTheme.green])[weekday]
+        }
+        // A deterministic key keeps the same category colour when filters remove its neighbours.
+        let hash = key.utf8.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+        return NativeTheme.chartColors[Int(hash % UInt64(NativeTheme.chartColors.count))]
+    }
+    private func color(_ point: LabCategory) -> Color { color(for: colorKey(point)) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if values.isEmpty { Text("No values in this selection.").font(.subheadline).foregroundStyle(.secondary) }
-            else {
-                Chart(values.filter { $0.value.isFinite }) { point in
-                    if horizontal {
-                        BarMark(x: .value(unit, point.value), y: .value("Category", point.label))
-                            .foregroundStyle(by: .value("Series", point.series))
-                            .position(by: .value("Series", point.series))
-                    } else {
-                        BarMark(x: .value("Category", point.label), y: .value(unit, point.value))
-                            .foregroundStyle(by: .value("Series", point.series))
-                            .position(by: .value("Series", point.series))
-                    }
-                }
-                .chartForegroundStyleScale(range: [NativeTheme.accent, NativeTheme.blue, .teal, .purple])
-                .chartXSelection(value: horizontal ? .constant(nil) : $selectedLabel)
-                .chartYSelection(value: horizontal ? $selectedLabel : .constant(nil))
-                .frame(height: horizontal ? max(170, min(360, Double(Set(values.map(\.label)).count) * 34)) : 205)
-                if let selectedLabel {
-                    ForEach(values.filter { $0.label == selectedLabel }) { point in
-                        Text("\(point.label) · \(point.series): \(LabMath.number(point.value)) \(unit)\(point.detail.isEmpty ? "" : " · " + point.detail)")
-                            .font(.caption).monospacedDigit()
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            if rows.isEmpty {
+                Text("No values in this selection.").font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                if horizontal { horizontalRows }
+                else {
+                    Text(unit).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    if valid.isEmpty {
+                        Text("No usable measurements in this selection. Missing categories are not zero.").font(.subheadline).foregroundStyle(.secondary)
+                        categoryInspector
+                    } else if compactCategories {
+                        verticalChart.frame(height: 235).padding(.bottom, 26)
+                        Text("Tap or drag across the profile, or choose an hour below. Unrecorded hours have no bar.").font(.caption).foregroundStyle(.secondary)
+                        categoryInspector
+                    } else if categories.count > 10 {
+                        ScrollView(.horizontal) {
+                            verticalChart.frame(width: CGFloat(categories.count) * 56, height: 235)
+                                .padding(.trailing, 12)
+                        }
+                        Text("Swipe sideways for all \(categories.count) categories. Tap a bar to inspect its exact value.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else { verticalChart.frame(height: 235) }
+                    selectionDetail
                 }
                 DisclosureGroup("Values and units") {
-                    ForEach(values.prefix(60)) { point in
-                        LabeledContent("\(point.label) · \(point.series)", value: "\(LabMath.number(point.value)) \(unit)")
-                            .font(.caption)
-                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(rows.prefix(60)) { point in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(point.label)\(multipleSeries ? " · " + point.series : ""): \(displayedValue(point))")
+                                if !point.detail.isEmpty { Text(point.detail).foregroundStyle(.secondary) }
+                            }.font(.caption)
+                        }
+                        if rows.count > 60 { Text("First 60 entries listed; select bars to inspect the remaining categories.").font(.caption) }
+                    }.padding(.top, 8)
                 }.font(.caption)
+            }
+        }
+        .onChange(of: revision) { _, _ in selectedLabel = nil }
+    }
+    private var categoryInspector: some View {
+        Menu {
+            ForEach(categories, id: \.self) { label in
+                Button(label) { selectedLabel = label }
+            }
+        } label: {
+            HStack {
+                Text(compactCategories ? "Inspect hour" : "Inspect category")
+                Spacer()
+                Text(selectedLabel ?? (compactCategories ? "Choose hour" : "Choose category"))
+                Image(systemName: "chevron.up.chevron.down").font(.caption)
+            }
+            .font(.subheadline).frame(minHeight: 44).contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("\(identifierPrefix ?? "bar")-inspector")
+    }
+    private var horizontalRows: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(unit).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            ForEach(rows) { point in
+                Button { selectedLabel = point.label } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(point.label).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Text(point.isMissing ? "Not recorded" : LabMath.number(point.value)).font(.subheadline.weight(.bold)).monospacedDigit()
+                        }
+                        if multipleSeries { Text(point.series).font(.caption).foregroundStyle(.secondary) }
+                        if point.isMissing {
+                            RoundedRectangle(cornerRadius: 6).strokeBorder(.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4])).frame(height: 14)
+                                .accessibilityHidden(true)
+                        } else { horizontalBar(point) }
+                        if selectedLabel == point.label, !point.detail.isEmpty { Text(point.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(color(point).opacity(selectedLabel == point.label ? 0.13 : 0.045), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(color(point).opacity(selectedLabel == point.label ? 0.65 : 0), lineWidth: 1) }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(point.label)\(multipleSeries ? " · " + point.series : "")")
+                .accessibilityValue("\(displayedValue(point))\(point.detail.isEmpty ? "" : " · " + point.detail)")
+                .accessibilityIdentifier(identifierPrefix.map { "\($0)-\(point.label)" } ?? "bar-\(point.id)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(selectedLabel == point.label ? .isSelected : [])
+            }
+        }
+    }
+    private func horizontalBar(_ point: LabCategory) -> some View {
+        let low = min(0, valid.map(\.value).min() ?? 0)
+        let high = max(0, valid.map(\.value).max() ?? 0)
+        let span = max(high - low, 0.000000001)
+        let origin = (min(0, point.value) - low) / span
+        let fraction = abs(point.value) / span
+        return GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 6).fill(color(point).opacity(0.12))
+                if point.value != 0 {
+                    RoundedRectangle(cornerRadius: 6).fill(color(point).gradient)
+                        .frame(width: max(2, geometry.size.width * fraction))
+                        .offset(x: geometry.size.width * origin)
+                }
+                if low < 0 {
+                    Rectangle().fill(.secondary.opacity(0.6)).frame(width: 1)
+                        .offset(x: geometry.size.width * (-low / span))
+                }
+            }
+        }.frame(height: 14).accessibilityHidden(true)
+    }
+    private var verticalChart: some View {
+        Chart(valid) { point in
+            BarMark(x: .value("Category", point.label), y: .value(unit, point.value))
+                .foregroundStyle(by: .value("Category colour", colorKey(point)))
+                .position(by: .value("Series", point.series))
+                .cornerRadius(4)
+        }
+        .chartXScale(domain: categories)
+        .chartForegroundStyleScale(domain: colorDomain, range: colorDomain.map { color(for: $0) })
+        .chartLegend(multipleSeries ? .visible : .hidden)
+        .chartXAxis {
+            AxisMarks(values: ticks) { value in
+                AxisValueLabel {
+                    if let label = value.as(String.self) {
+                        Text(label).font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .chartXAxis(compactCategories ? .hidden : .visible)
+        .chartYAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine()
+                AxisValueLabel { if let number = value.as(Double.self) { Text(LabMath.number(number)).font(.caption2) } }
+            }
+        }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                if compactCategories, let frame = proxy.plotFrame {
+                    let plot = geometry[frame]
+                    ForEach(ticks, id: \.self) { label in
+                        if let x = proxy.position(forX: label) {
+                            Text(label).font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize()
+                                .position(x: plot.minX + x, y: plot.maxY + 14)
+                                .accessibilityIdentifier("\(identifierPrefix ?? "bar")-tick-\(label)")
+                        }
+                    }
+                }
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .onTapGesture { location in
+                        guard let frame = proxy.plotFrame else { return }
+                        let plot = geometry[frame]
+                        guard plot.contains(location) else { return }
+                        selectedLabel = proxy.value(atX: location.x - plot.minX, as: String.self)
+                    }
+                    .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { value in
+                        guard compactCategories, abs(value.translation.width) > abs(value.translation.height),
+                              let frame = proxy.plotFrame else { return }
+                        let plot = geometry[frame]
+                        guard plot.contains(value.location) else { return }
+                        selectedLabel = proxy.value(atX: value.location.x - plot.minX, as: String.self)
+                    })
+            }
+        }
+        .id(revision)
+        .accessibilityLabel("\(unit) by category. Tap a bar or expand Values and units for exact values.")
+    }
+    @ViewBuilder private var selectionDetail: some View {
+        if let selectedLabel {
+            ForEach(rows.filter { $0.label == selectedLabel }) { point in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(point.label)\(multipleSeries ? " · " + point.series : ""): \(displayedValue(point))")
+                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                        .accessibilityIdentifier("\(identifierPrefix ?? "bar")-selection")
+                    if !point.detail.isEmpty { Text(point.detail).font(.caption).foregroundStyle(.secondary) }
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(color(point).opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("barSelectionSummary")
             }
         }
     }
@@ -299,7 +491,7 @@ struct LabHeatmap: View {
                 if let value = cell.value, value.isFinite {
                     RectangleMark(xStart: .value("Column", Double(cell.column)), xEnd: .value("Column end", Double(cell.column + 1)),
                                   yStart: .value("Row", Double(cell.row)), yEnd: .value("Row end", Double(cell.row + 1)))
-                        .foregroundStyle((signed && value < 0 ? NativeTheme.blue : NativeTheme.accent)
+                        .foregroundStyle((signed ? (value < 0 ? NativeTheme.blue : NativeTheme.amber) : NativeTheme.teal)
                             .opacity(0.12 + 0.88 * (signed ? abs(value) : log1p(max(value, 0))) / (signed ? maximum : log1p(maximum))))
                 }
             }
@@ -365,7 +557,7 @@ struct LabSpreadChart: View {
                 RuleMark(xStart: .value("Low", row.low), xEnd: .value("High", row.high), y: .value("Group", row.label))
                     .foregroundStyle(NativeTheme.blue)
                 BarMark(xStart: .value("Lower quartile", row.q1), xEnd: .value("Upper quartile", row.q3), y: .value("Group", row.label), height: .fixed(18))
-                    .foregroundStyle(NativeTheme.accent.opacity(0.5))
+                    .foregroundStyle(NativeTheme.violet.opacity(0.35))
                 PointMark(x: .value("Median", row.median), y: .value("Group", row.label))
                     .symbol(.diamond).foregroundStyle(.primary).symbolSize(48)
             }

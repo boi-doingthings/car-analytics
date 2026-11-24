@@ -89,12 +89,16 @@ struct NativeGarageView: View {
             sheet = value
         } label: {
             VStack(spacing: 9) {
-                Image(systemName: symbol).font(.title3)
+                Image(systemName: symbol).font(.title3.weight(.semibold))
+                    .foregroundStyle(NativeTheme.iconTint(for: symbol))
+                    .frame(width: 36, height: 32)
+                    .background(NativeTheme.iconTint(for: symbol).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
                 Text(title).font(.subheadline.weight(.medium))
             }
             .frame(maxWidth: .infinity, minHeight: 76)
             .padding(8)
             .background(NativeTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(NativeTheme.border, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .disabled(!folder.writesAllowed)

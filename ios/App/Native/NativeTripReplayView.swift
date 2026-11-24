@@ -182,7 +182,7 @@ struct NativeTripReplayView: View {
     }
 
     private var accelerationChart: some View {
-        NativeCard(title: "Coarse acceleration estimate", symbol: "waveform.path") {
+        NativeCard(title: "Coarse acceleration estimate", symbol: "waveform.path", tint: NativeTheme.coral) {
             let runs = runs(acceleration: true)
             if runs.isEmpty {
                 Text("Not enough contiguous timed speed pairs to estimate speed changes.").font(.subheadline).foregroundStyle(.secondary)
@@ -193,7 +193,7 @@ struct NativeTripReplayView: View {
                         ForEach(run.samples) { sample in
                             if let value = sample.accelerationMS2 {
                                 LineMark(x: .value("Elapsed minutes", sample.seconds / 60), y: .value("Estimated m/s²", value), series: .value("Contiguous section", run.id))
-                                    .foregroundStyle(NativeTheme.accent).interpolationMethod(.linear)
+                                    .foregroundStyle(NativeTheme.coral).interpolationMethod(.linear)
                             }
                         }
                     }

@@ -175,7 +175,7 @@ struct NativeAtlasView: View {
                     if let point = coordinate(hotspot.latitude, hotspot.longitude) {
                         Annotation("Historical slow area \(index + 1)", coordinate: point) {
                             Image(systemName: "clock.fill").font(.caption).foregroundStyle(.white)
-                                .padding(6).background(NativeTheme.accent, in: Circle())
+                                .padding(6).background(NativeTheme.amber, in: Circle())
                         }
                     }
                 }
@@ -360,11 +360,11 @@ struct NativeAtlasView: View {
     private func lineColor(_ line: NativeAtlasLine) -> Color {
         switch mode {
         case .speed:
-            switch line.speedBand { case .some(0): return .blue; case .some(1): return .teal; case .some(2): return NativeTheme.accent; case .some(3): return .orange; default: return .gray }
+            switch line.speedBand { case .some(0): return .blue; case .some(1): return .teal; case .some(2): return NativeTheme.amber; case .some(3): return .orange; default: return .gray }
         case .departure:
-            return [.purple, .blue, .teal, NativeTheme.accent][line.departureBand]
+            return [NativeTheme.purple, NativeTheme.blue, NativeTheme.teal, NativeTheme.amber][line.departureBand]
         default: return NativeTheme.blue
         }
     }
-    private func densityColor(_ visits: Int) -> Color { visits >= 5 ? NativeTheme.accent : NativeTheme.blue }
+    private func densityColor(_ visits: Int) -> Color { visits >= 5 ? NativeTheme.amber : NativeTheme.blue }
 }

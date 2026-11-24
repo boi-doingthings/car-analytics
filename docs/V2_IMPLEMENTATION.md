@@ -73,3 +73,15 @@ The [migration coverage document](NATIVE_ANALYTICS_MIGRATION.md) maps all former
 Review also corrected missing fuel-model rates being presented as zero, archive identity on invoice loading, overlapping archive-banner/navigation controls, full-row activity touch regions, stacked comparison shares, duplicate series legends and insufficient precision for small values. These changes preserve the existing archive write-consent and collector-retention policies.
 
 Validation passed 134 app unit tests and all eight native UI workflows, with focused reruns after interface fixes. Public JavaScript checks passed 59 tests with 21 private-history skips. A separate invented six-month archive exercised populated charts with 286 trips, 26 refuels, three trip clusters and 22 chronological fuel predictions; the native decoding/runner integration preserved archive bytes. Privacy and secret scans passed. No main archive or live provider calls were used in this work. Physical-device acceptance and battery profiling remain outstanding.
+
+## Native color and chart readability
+
+The native palette now uses adaptive blue actions, teal, indigo, violet, coral, amber and green on neutral system surfaces. Cards have tinted icon tiles and metrics retain readable semantic colors in both appearances. Atlas layer colors and signed analytical scales keep their original meaning.
+
+Weekday comparisons use full labels, thick proportional bars and always-visible exact values. Selecting a row exposes its supporting trip/calendar counts. The hourly idle profile retains all 24 departure hours with sparse time labels, tap/drag selection, an hour menu and an accessible values disclosure. Missing engine-time observations remain unavailable rather than becoming zero. Long categorical charts scroll instead of compressing labels.
+
+Provider event exposure defaults to braking, acceleration and overspeed comparisons, with a segmented weekday alternative. Counts and raw kilometres come from the same complete trip cohort; zero-distance exposure has no rate. The displayed evidence includes comparable trips and recorded distance. Four additional unit checks cover cohort alignment, unknown versus zero, invalid inputs and India-time weekday boundaries.
+
+The Patterns section has an explicit accessibility container and bounded eager card layout, preserving each chart’s controls when scrolling. The hourly plot draws its sparse time labels separately from the chart’s automatic axis to prevent overlapping labels on phone widths. Touch inspection uses the plot coordinates without starting analysis or provider collection.
+
+Validation: 138 app unit tests and all nine native UI workflows passed across consolidated/focused runs. Populated-history visual checks additionally exercised the comparison rows, hourly inspection and grouping switch in light/dark appearances using invented data. Privacy and secret scans passed. No main archive or live provider calls were used.

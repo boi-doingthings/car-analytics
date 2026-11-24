@@ -28,6 +28,7 @@ struct NativeLabView: View {
                         .accessibilityIdentifier("labStudyPicker")
                         if study == .patterns {
                             NativeDrivingPatternsView(snapshot: snapshot, window: window)
+                                .accessibilityElement(children: .contain)
                                 .accessibilityIdentifier("drivingPatternsScreen")
                         } else {
                             NativePerformanceInsightsView(snapshot: snapshot, window: window)
