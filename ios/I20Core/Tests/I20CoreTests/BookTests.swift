@@ -152,4 +152,41 @@ func makeTempBook() throws -> (Book, URL) {
         try viaLink.writeAtomic("x.json", Data("x".utf8))
         #expect(try book.read("x.json") == Data("x".utf8))
     }
+    @Test func readOnlyArchiveCanReadButCannotCreateReplaceOrDelete() throws {
+        let (writer, tmp) = try makeTempBook()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let original = Data("preserve".utf8)
+        try writer.writeAtomic("log/refuels/keep.json", original)
+        let placeholder = writer.root.appending(path: ".pending.json.icloud")
+        try Data().write(to: placeholder)
+        let book = Book(root: writer.root, writeAuthorization: BookWriteAuthorization(allowed: false))
+        #expect(!book.canWrite)
+        #expect(try book.read("log/refuels/keep.json") == original)
+        #expect(try book.list("log/refuels") == ["keep.json"])
+        #expect(throws: BookError.readOnly) { try book.writeAtomic("log/refuels/keep.json", Data("changed".utf8)) }
+        #expect(throws: BookError.readOnly) { try book.writeAtomic("new/folder/file.json", Data()) }
+        #expect(throws: BookError.readOnly) { try book.delete("log/refuels/keep.json") }
+        #expect(throws: BookError.readOnly) { try book.delete("pending.json") }
+        #expect(try writer.read("log/refuels/keep.json") == original)
+        #expect(!FileManager.default.fileExists(atPath: writer.root.appending(path: "new").path))
+        #expect(FileManager.default.fileExists(atPath: placeholder.path))
+    }
+
+    @Test func revocationAffectsEveryHeldReferenceSharingAuthorization() throws {
+        let (writer, tmp) = try makeTempBook()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let policy = BookWriteAuthorization()
+        let held = Book(root: writer.root, writeAuthorization: policy)
+        let other = Book(root: writer.root, writeAuthorization: policy)
+        try held.writeAtomic("before.json", Data("old".utf8))
+        policy.setAllowed(false)
+        #expect(!held.canWrite && !other.canWrite)
+        #expect(throws: BookError.readOnly) { try held.writeAtomic("later.json", Data()) }
+        #expect(throws: BookError.readOnly) { try other.delete("before.json") }
+        #expect(try held.read("before.json") == Data("old".utf8))
+        policy.setAllowed(true)
+        try other.writeAtomic("after.json", Data("permitted".utf8))
+        #expect(try held.read("after.json") == Data("permitted".utf8))
+    }
+
 }

@@ -633,6 +633,123 @@ final class LogFormTests: XCTestCase {
         XCTAssertEqual(store.refuels.count, 4)
     }
 
+    private func secondBook() throws -> Book {
+        let root = tmp.appending(path: "other/i20_book")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return Book(root: root)
+    }
+
+    private func addPlaceholder(_ entry: Refuel, to book: Book) throws -> URL {
+        let directory = book.root.appending(path: "log/refuels")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let placeholder = directory.appending(path: ".\(entry.id).json.icloud")
+        try Data().write(to: placeholder)
+        return placeholder
+    }
+
+    func test_switchingArchiveDoesNotKeepOtherArchivesRowsOnDownloadFailure() async throws {
+        let first = try emptyBook()
+        let second = try secondBook()
+        let fill = pastFill("2026-10-01", odo: 1000, station: "First archive")
+        try save(fill, in: first)
+        _ = try addPlaceholder(pastFill("2026-10-02", odo: 1100), to: second)
+        let store = LogStore(downloadTimeout: 0.1)
+        await store.load(from: first)
+        XCTAssertEqual(store.refuels.map(\.station), ["First archive"])
+
+        await store.load(from: second)
+
+        XCTAssertEqual(store.archiveRoot, second.root)
+        XCTAssertEqual(store.items, [])
+        XCTAssertEqual(store.refuels, [])
+        XCTAssertEqual(store.skipped, 0)
+        XCTAssertEqual(store.loadError, LogText.stillDownloading)
+    }
+
+    func test_sameArchiveDownloadFailureKeepsOnlyItsOwnCachedRows() async throws {
+        let book = try emptyBook()
+        let fill = pastFill("2026-10-01", odo: 1000)
+        try save(fill, in: book)
+        let store = LogStore(downloadTimeout: 0.1)
+        await store.load(from: book)
+        _ = try addPlaceholder(pastFill("2026-10-02", odo: 1100), to: book)
+
+        await store.load(from: book)
+
+        XCTAssertEqual(store.items, [.refuel(fill)])
+        XCTAssertEqual(store.loadError, LogText.stillDownloading)
+    }
+
+    func test_latePreviousArchiveSuccessCannotReplaceCurrentRows() async throws {
+        let first = try emptyBook()
+        let second = try secondBook()
+        let pending = pastFill("2026-10-01", odo: 1000, station: "Old pending row")
+        let placeholder = try addPlaceholder(pending, to: first)
+        let current = pastFill("2026-10-02", odo: 1100, station: "Current archive")
+        try save(current, in: second)
+        let store = LogStore(downloadTimeout: 1)
+        let oldLoad = Task { await store.load(from: first) }
+        for _ in 0..<100 {
+            if store.archiveRoot == first.root { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(store.archiveRoot, first.root)
+        await store.load(from: second)
+        try save(pending, in: first)
+        try FileManager.default.removeItem(at: placeholder)
+        await oldLoad.value
+
+        XCTAssertEqual(store.archiveRoot, second.root)
+        XCTAssertEqual(store.items, [.refuel(current)])
+        XCTAssertNil(store.loadError)
+    }
+
+    func test_latePreviousArchiveErrorCannotReplaceCurrentSuccess() async throws {
+        let first = try emptyBook()
+        let second = try secondBook()
+        _ = try addPlaceholder(pastFill("2026-10-01", odo: 1000), to: first)
+        let current = pastFill("2026-10-02", odo: 1100, station: "Current archive")
+        try save(current, in: second)
+        let store = LogStore(downloadTimeout: 0.1)
+        let oldLoad = Task { await store.load(from: first) }
+        for _ in 0..<100 {
+            if store.archiveRoot == first.root { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(store.archiveRoot, first.root)
+        await store.load(from: second)
+        await oldLoad.value
+
+        XCTAssertEqual(store.archiveRoot, second.root)
+        XCTAssertEqual(store.items, [.refuel(current)])
+        XCTAssertNil(store.loadError)
+    }
+
+    func test_editAndDeleteRefuseDifferentArchiveEvenWithMatchingEntryID() async throws {
+        let first = try emptyBook()
+        let second = try secondBook()
+        let fill = pastFill("2026-10-01", odo: 1000, station: "Original")
+        try save(fill, in: first)
+        var other = fill
+        other.station = "Second archive record with matching ID"
+        try save(other, in: second)
+        let path = "log/refuels/\(fill.id).json"
+        let before = try second.read(path)
+        let store = LogStore()
+        await store.load(from: first)
+        let item = try XCTUnwrap(store.items.first)
+
+        XCTAssertNil(store.editingBook(for: item, in: second))
+        XCTAssertFalse(store.delete(item, in: second))
+        XCTAssertEqual(store.actionError, LogText.archiveChanged)
+        XCTAssertEqual(try second.read(path), before)
+        XCTAssertTrue(first.exists(path))
+
+        await store.load(from: second)
+        XCTAssertNil(store.editingBook(for: item, in: second), "A stale record cannot overwrite newer loaded contents")
+        XCTAssertNotNil(store.editingBook(for: .refuel(other), in: second))
+    }
+
     func test_loadReportsAnUnreachableFolder() async throws {
         let book = try emptyBook()
         try FileManager.default.removeItem(at: book.root)
@@ -690,7 +807,7 @@ final class LogFormTests: XCTestCase {
         XCTAssertTrue(m.save(in: book))
         await LogStore.rebuildAfterSave(sync)
         XCTAssertNil(sync.state.error)
-        let fuel = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: derived.appending(path: "fuel.json"))) as? [String: Any])
+        let fuel = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: sync.derivedDir.appending(path: "fuel.json"))) as? [String: Any])
         let fills = try XCTUnwrap(fuel["fills"] as? [[String: Any]])
         XCTAssertTrue(fills.contains { $0["station"] as? String == "Fresh Pump" && $0["amount"] as? Double == 1234 })
     }

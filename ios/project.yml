@@ -40,12 +40,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: I20 Logbook
+        INFOPLIST_KEY_CFBundleDisplayName: Car Analytics
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Saves where you refuelled so the pump is suggested next time."
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "2"
   I20LogbookTests:
     type: bundle.unit-test
     platform: iOS
@@ -69,6 +69,9 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: UITests
+      - path: Tests/Fixtures/book
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: I20Logbook
     settings:

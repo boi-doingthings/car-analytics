@@ -13,11 +13,11 @@ struct I20LogbookApp: App {
         if let harness = DebugHarness.fromEnvironment() {
             folder.book = harness.book
             _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }, credentials: { ("debug", "debug") },
-                                                              login: harness.login))
+                                                              login: harness.login, automaticCollection: { folder.automaticSyncEnabled }))
             return
         }
         #endif
-        _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }))
+        _sync = StateObject(wrappedValue: SyncCoordinator(book: { folder.book }, automaticCollection: { folder.automaticSyncEnabled }))
     }
 
     var body: some Scene {
@@ -37,14 +37,10 @@ struct RootView: View {
     @State private var hasCredentials = Credentials.load() != nil || DebugHarness.active
 
     var body: some View {
-        if folder.book == nil || !hasCredentials {
+        if folder.book == nil {
             SetupView(hasCredentials: $hasCredentials)
         } else {
-            TabView {
-                DashboardView().tabItem { Label("Dashboard", systemImage: "gauge") }
-                LogListView().tabItem { Label("Log", systemImage: "fuelpump") }
-                SettingsView().tabItem { Label("Settings", systemImage: "gear") }
-            }
+            NativeWorkspace()
         }
     }
 }

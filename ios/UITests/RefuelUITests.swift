@@ -21,7 +21,10 @@ final class RefuelUITests: XCTestCase {
         app.resetAuthorizationStatus(for: .location)
         app.launch()
 
-        app.tabBars.buttons["Log"].tap()
+        app.tabBars.buttons["Garage"].tap()
+        let openLogbook = app.buttons["openLogbook"]
+        for _ in 0..<5 where !openLogbook.isHittable { app.swipeUp() }
+        openLogbook.tap()
         app.buttons["refuelButton"].tap()
         dismissLocationPrompt()
 
@@ -31,10 +34,22 @@ final class RefuelUITests: XCTestCase {
         type("12000", into: app.textFields["odometer"])
         type("UI Pump", into: app.textFields["station"])
         XCTAssertTrue(app.switches["fullTank"].isOn)
+        XCTAssertTrue(app.buttons["save"].isEnabled)
         app.buttons["save"].tap()
 
         // Back on the list, the new entry is shown.
-        XCTAssertTrue(app.staticTexts["UI Pump"].waitForExistence(timeout: 10))
+        let rowAppeared = app.staticTexts["UI Pump"].waitForExistence(timeout: 10)
+        if !rowAppeared {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "Refuel after save"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Refuel save accessibility hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        XCTAssertTrue(rowAppeared, app.debugDescription)
 
         // Exactly one entry file was written into the book, with the form's values.
         let dir = root.appending(path: "log/refuels")

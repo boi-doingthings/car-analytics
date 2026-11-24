@@ -16,8 +16,8 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
 
     private let webRoot: URL?
     private let sync: SyncCoordinator
-    /// When the page last polled `/api/sync`; a page that polls reloads itself when a run finishes.
-    private(set) var lastPoll: Date?
+    /// A page and all of its data requests see one revision, even while a sync publishes another.
+    private var pinnedDerivedDir: URL?
 
     init(sync: SyncCoordinator, webRoot: URL? = Bundle.main.url(forResource: "web", withExtension: nil)) {
         self.sync = sync
@@ -27,10 +27,16 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url, let path = Self.requestPath(url) else { return fail(task, 404) }
         if path == "api/sync" {
-            lastPoll = Date()
-            if task.request.httpMethod == "POST" { sync.syncNow() }
+            if task.request.httpMethod == "POST" {
+                if !sync.archiveAllowsChanges || (Credentials.load() == nil && !DebugHarness.active) {
+                    sync.rebuild()
+                } else {
+                    sync.syncNow()
+                }
+            }
             return respond(task, url: url, status: 200, type: "application/json", body: statusJSON())
         }
+        if path.hasSuffix(".html") || path.isEmpty { pinnedDerivedDir = sync.derivedDir }
         guard let file = resolve(url: url) else { return fail(task, 404) }
         guard let body = try? Data(contentsOf: file) else { return fail(task, 404) }
         respond(task, url: url, status: 200, type: Self.mimeType(file.pathExtension), body: body)
@@ -59,7 +65,7 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
         let comps = path.split(separator: "/").map(String.init)
         guard !comps.isEmpty, !comps.contains(where: { $0 == ".." || $0 == "." || $0.hasPrefix(".") }) else { return nil }
         if comps.count == 1, Self.derivedNames.contains(comps[0]) {
-            return sync.derivedDir.appending(path: comps[0])
+            return (pinnedDerivedDir ?? sync.derivedDir).appending(path: comps[0])
         }
         guard let webRoot else { return nil }
         let isVendor = comps.count > 1 && comps[0] == "vendor"
@@ -77,6 +83,9 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
             "error": s.error ?? NSNull(),
             "last_sync": s.lastSync.map { istTimestamp($0) } ?? NSNull(),
             "issues": s.issues.count,
+            "last_analysis": s.lastAnalysis.map { istTimestamp($0) } ?? NSNull(),
+            "read_only": !sync.archiveAllowsChanges,
+            "analysis_generation": sync.hasCurrentArchiveSnapshot ? sync.derivedDir.lastPathComponent : NSNull(),
         ]
         return (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
     }

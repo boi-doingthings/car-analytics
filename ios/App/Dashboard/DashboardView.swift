@@ -65,11 +65,10 @@ struct DashboardWebView: UIViewRepresentable {
             runningBag = sync.$state.map(\.running).removeDuplicates().receive(on: RunLoop.main).sink { [weak self] running in
                 if !running { self?.refresh?.endRefreshing() }
             }
-            // A page that is polling /api/sync reloads itself when the run ends; otherwise (first launch
-            // with no data, or a rebuild started natively) reload it here.
+            // A newly published generation is the only automatic web reload trigger.
+            // A recent status GET is not evidence that the page is actively polling.
             bag = sync.$finishedRuns.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
                 guard let self, let web = self.web else { return }
-                if let poll = self.handler.lastPoll, Date().timeIntervalSince(poll) < 5 { return }
                 web.reload()
             }
         }

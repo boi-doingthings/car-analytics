@@ -668,35 +668,91 @@ var __i20 = (() => {
       const Pn = [0, 1, 2].map((i) => [0, 1, 2].map((j) => (i === j ? P0d[i] : 0) + Xs.reduce((a, r) => a + r[i] * r[j], 0) / sigma2 ** 2));
       const Sn2 = inv(Pn);
       const rhs = [0, 1, 2].map((i) => P0d[i] * m0[i] + Xs.reduce((a, r, k) => a + r[i] * ys[k], 0) / sigma2 ** 2);
-      return { mn: Sn2.map((row) => row.reduce((a, v, j) => a + v * rhs[j], 0)), Sn: Sn2 };
+      return { mn: cholSolve(cholesky(Pn), rhs), Sn: Sn2, precision: Pn };
     };
-    const logEvidence = (sigma2) => {
-      const C = X.map((xi, i) => X.map((xj, j) => xi.reduce((a, v, k) => a + v * s0[k] ** 2 * xj[k], 0) + (i === j ? sigma2 ** 2 : 0)));
-      const r = y.map((v, i) => v - X[i].reduce((a, x, k) => a + x * m0[k], 0));
-      const L = cholesky(C);
-      const logdet = 2 * L.reduce((a, row, i) => a + Math.log(row[i]), 0);
-      const w = cholSolve(L, r);
-      return -0.5 * (r.reduce((a, v, i) => a + v * w[i], 0) + logdet + N * Math.log(2 * Math.PI));
+    const logEvidence = (sigma2, Xs, ys) => {
+      if (!ys.length) return 0;
+      const { mn: mn2, precision } = posterior(sigma2, Xs, ys);
+      const L = cholesky(precision);
+      const logdet = 2 * ys.length * Math.log(sigma2) + s0.reduce((a, sd2) => a + 2 * Math.log(sd2), 0) + 2 * L.reduce((a, row, i) => a + Math.log(row[i]), 0);
+      const residual = ys.reduce((a, value, i) => a + (value - Xs[i].reduce((v, x, j) => v + x * mn2[j], 0)) ** 2, 0) / sigma2 ** 2;
+      const priorPenalty = mn2.reduce((a, value, j) => a + (value - m0[j]) ** 2 / s0[j] ** 2, 0);
+      return -0.5 * (residual + priorPenalty + logdet + ys.length * Math.log(2 * Math.PI));
     };
     const grid = linspace(1, 12, 111);
-    const ev = grid.map(logEvidence);
-    let best = 0;
-    ev.forEach((v, i) => {
-      if (v > ev[best]) best = i;
-    });
-    const sigma = grid[best];
+    const selectNoise = (Xs, ys) => {
+      const evidence = grid.map((sigma2) => logEvidence(sigma2, Xs, ys));
+      let best = 0;
+      evidence.forEach((value, i) => {
+        if (value > evidence[best]) best = i;
+      });
+      return { sigma: grid[best], evidence };
+    };
+    const { sigma, evidence: ev } = selectNoise(X, y);
     const { mn, Sn } = posterior(sigma, X, y);
     const sd = [0, 1, 2].map((i) => Math.sqrt(Sn[i][i]));
     const pred = X.map((xi) => xi.reduce((a, v, k) => a + v * mn[k], 0));
-    const loo = [], naive = [];
-    const kmAll = ok2.map((r) => r.km);
-    for (let i = 0; i < N && N >= 2; i++) {
-      const keep = y.map((_, k) => k !== i);
-      const { mn: mk } = posterior(sigma, X.filter((_, k) => keep[k]), y.filter((_, k) => keep[k]));
-      loo.push(y[i] - X[i].reduce((a, v, k) => a + v * mk[k], 0));
-      const kmplK = sum(kmAll.filter((_, k) => keep[k])) / sum(y.filter((_, k) => keep[k]));
-      naive.push(y[i] - kmAll[i] / kmplK);
+    const minChronologicalTrain = 3;
+    const predict = (test, training) => {
+      const Xs = training.map((i) => X[i]), ys = training.map((i) => y[i]);
+      const { sigma: foldSigma } = selectNoise(Xs, ys);
+      const { mn: coefficients } = posterior(foldSigma, Xs, ys);
+      const predicted = X[test].reduce((value, x, j) => value + x * coefficients[j], 0);
+      const trainKM = training.reduce((total, i) => total + ok2[i].km, 0);
+      const trainLitres = ys.reduce((total, value) => total + value, 0);
+      const baseline = trainKM > 0 ? ok2[test].km * trainLitres / trainKM : null;
+      return {
+        from: ok2[test].from,
+        to: ok2[test].to,
+        train_intervals: training.length,
+        sigma_l: foldSigma,
+        actual_l: y[test],
+        predicted_l: predicted,
+        baseline_l: baseline,
+        error_l: predicted - y[test],
+        baseline_error_l: baseline == null ? null : baseline - y[test]
+      };
+    };
+    const summarize = (method, minimum, predictions) => {
+      const baseline = predictions.filter((row) => row.baseline_error_l != null);
+      const mean3 = (rows, key, absolute = false) => rows.length ? rows.reduce((total, row) => total + (absolute ? Math.abs(row[key]) : row[key]), 0) / rows.length : null;
+      return {
+        method,
+        min_train_intervals: minimum,
+        n_predictions: predictions.length,
+        baseline_n_predictions: baseline.length,
+        model_mae_l: mean3(predictions, "error_l", true),
+        baseline_mae_l: mean3(baseline, "baseline_error_l", true),
+        model_bias_l: mean3(predictions, "error_l"),
+        baseline_bias_l: mean3(baseline, "baseline_error_l"),
+        predictions
+      };
+    };
+    const indices = ok2.map((_, i) => i);
+    const looRows = N >= 2 ? indices.map((test) => predict(test, indices.filter((i) => i !== test))) : [];
+    const loo = summarize("nested_leave_one_interval_out", 1, looRows);
+    const validDay = (day2) => typeof day2 === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day2) && Number.isFinite(Date.parse(day2 + "T00:00:00Z")) && (/* @__PURE__ */ new Date(day2 + "T00:00:00Z")).toISOString().slice(0, 10) === day2;
+    const timed = indices.filter((i) => validDay(ok2[i].from) && validDay(ok2[i].to) && ok2[i].from < ok2[i].to).sort((a, b) => ok2[a].to.localeCompare(ok2[b].to) || ok2[a].from.localeCompare(ok2[b].from) || a - b);
+    const chronologicalRows = [];
+    for (const test of timed) {
+      const training = timed.filter((i) => i !== test && ok2[i].to <= ok2[test].from);
+      if (training.length >= minChronologicalTrain) chronologicalRows.push(predict(test, training));
     }
+    const chronological = {
+      ...summarize("expanding_window_one_step", minChronologicalTrain, chronologicalRows),
+      eligible_intervals: timed.length,
+      excluded_date_intervals: N - timed.length,
+      insufficient_history_intervals: timed.length - chronologicalRows.length
+    };
+    const validation = {
+      schema: 1,
+      units: "litres",
+      bias_definition: "prediction_minus_actual",
+      scope: "conditional_on_precomputed_intervals",
+      caveat: "Distance calibration, interval eligibility and city/highway splits are precomputed. This evaluates consumption fitting conditional on those inputs, not end-to-end forecasting or causal savings.",
+      loo,
+      chronological
+    };
     const pdf = (x, m, s) => Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
     const curves = {};
     NAMES.forEach((n2, j) => {
@@ -720,8 +776,10 @@ var __i20 = (() => {
       evidence: { sigma: grid.map((v) => npr(v, 2)), log_evidence: ev.map((v) => npr(v, 3)) },
       n_intervals: N,
       r2: N < 2 ? null : 1 - sum(y.map((v, i) => (v - pred[i]) ** 2)) / sum(y.map((v) => (v - ybar) ** 2)),
-      loo_mae: N < 2 ? null : sum(loo.map(Math.abs)) / N,
-      naive_loo_mae: N < 2 ? null : sum(naive.map(Math.abs)) / N,
+      // Legacy names are retained, now with noise selection nested correctly inside every fold.
+      loo_mae: loo.model_mae_l,
+      naive_loo_mae: loo.baseline_mae_l,
+      validation,
       kmpl_city: 100 / mn[0],
       kmpl_hwy: 100 / mn[1],
       curves,
@@ -1843,8 +1901,22 @@ var __i20 = (() => {
   }
 
   // src/index.js
-  var ENTRY_NAME = /^[0-9a-f-]{36}\.json$/;
-  var entriesIn = (files, folder) => Object.keys(files).filter((k) => k.startsWith(`log/${folder}/`) && ENTRY_NAME.test(k.slice(folder.length + 5))).sort().map((k) => files[k]);
+  var ENTRY_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
+  var entriesIn = (files, folder, warn) => {
+    const prefix = `log/${folder}/`;
+    return Object.keys(files).filter((key) => key.startsWith(prefix) && ENTRY_NAME.test(key.slice(prefix.length))).sort().flatMap((key) => {
+      const entry = files[key];
+      if ((entry?.schema ?? 1) > 1) return [entry];
+      const filenameID = key.slice(prefix.length, -5);
+      if (typeof entry?.id !== "string" || entry.id !== filenameID) {
+        const embedded = entry?.id;
+        const actualID = embedded == null ? "missing" : typeof embedded === "string" ? JSON.stringify(embedded) : ["number", "boolean"].includes(typeof embedded) ? String(embedded) : `invalid ${Array.isArray(embedded) ? "array" : typeof embedded}`;
+        warn(`skipping entry ${filenameID}: record ID does not match its filename (embedded ID: ${actualID})`);
+        return [];
+      }
+      return [entry];
+    });
+  };
   function runAll(files, { today, source } = {}) {
     const errors = [], warnings = [];
     const warn = (m) => warnings.push(String(m));
@@ -1858,9 +1930,9 @@ var __i20 = (() => {
     };
     const tables = attempt("tables", () => loadTables(files));
     const odoNow = tables ? tables.snaps.filter((s) => s.odometer_km != null).at(-1)?.odometer_km ?? null : null;
-    const fills = attempt("refuels", () => fillsFromRefuels(entriesIn(files, "refuels"), warn)) ?? [];
-    const services = attempt("services", () => servicesFrom(entriesIn(files, "services"), warn)) ?? [];
-    const maintenance = attempt("maintenance", () => maintenanceFrom(entriesIn(files, "maintenance"), warn)) ?? [];
+    const fills = attempt("refuels", () => fillsFromRefuels(entriesIn(files, "refuels", warn), warn)) ?? [];
+    const services = attempt("services", () => servicesFrom(entriesIn(files, "services", warn), warn)) ?? [];
+    const maintenance = attempt("maintenance", () => maintenanceFrom(entriesIn(files, "maintenance", warn), warn)) ?? [];
     const fuel = tables && attempt("fuel", () => buildFuel(tables, fills, odoNow, source ? { source } : void 0));
     const delta = fuel?.calibration?.delta ?? 0;
     const data = tables && attempt("data", () => buildOverview(tables, files, { today, delta, fuel, services, maintenance }));

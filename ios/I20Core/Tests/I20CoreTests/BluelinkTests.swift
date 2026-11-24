@@ -76,6 +76,27 @@ final class BluelinkTests: XCTestCase {
         (200, [:], Data(#"{"redirectUrl":"https://x/redirect?code=CODE123&state=test"}"#.utf8))
     }
 
+    func test_missingConfigurationFailsLocallyWithoutMakingRequests() async {
+        let missingFields: [(inout BluelinkConfig) -> Void] = [
+            { $0.ccspServiceId = "" }, { $0.appId = "" },
+            { $0.cfbBase64 = "" }, { $0.basicAuthorization = "" },
+        ]
+        for removeField in missingFields {
+            var configuration = BluelinkConfig.testFixture
+            removeField(&configuration)
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [StubProtocol.self]
+            let client = BluelinkClient(config: configuration, session: URLSession(configuration: session), retryDelay: 0)
+            do {
+                try await client.login(username: "test@example.invalid", password: "invented")
+                XCTFail("Expected a local configuration failure")
+            } catch {
+                XCTAssertEqual(error as? BluelinkError, .configurationMissing)
+            }
+            XCTAssertTrue(StubProtocol.recorded.isEmpty, "Incomplete local configuration must never send a request")
+        }
+    }
+
     func test_stampMatchesSyntheticXorFixture() {
         XCTAssertEqual(makeClient().stamp(at: 1700000000),
                        "dGVzdC1hcHA6MTcwMDAwMDAwMA==")

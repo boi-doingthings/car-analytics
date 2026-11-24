@@ -16,7 +16,8 @@ enum DebugHarness {
 
     static func fromEnvironment() -> Setup? {
         guard let path = ProcessInfo.processInfo.environment["I20_DEBUG_BOOK"] else { return nil }
-        return Setup(book: Book(root: URL(fileURLWithPath: path))) { _, _ in
+        let writable = ProcessInfo.processInfo.environment["I20_DEBUG_READ_ONLY"] != "1"
+        return Setup(book: Book(root: URL(fileURLWithPath: path), writeAuthorization: BookWriteAuthorization(allowed: writable))) { _, _ in
             try await Task.sleep(for: .seconds(2))  // long enough to see the step label
             return StubAPI()
         }
